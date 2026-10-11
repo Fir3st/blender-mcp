@@ -1,0 +1,60 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Generated packages
+/dist/
+/build/
+*.egg-info/
+
+# Local diagnostics (keep documentation)
+/logs/*
+!/logs/README.md
+*.log
+
+# Browser tooling and OS/editor files
+.playwright-mcp/
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local Blender working files and demo outputs
+*.blend
+*.blend[0-9]*
+/emmental_mcp_*.png
+
+# Environment files and sensitive material must never be committed
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.csr
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+authorized_keys
+known_hosts
+*secret*
+*token*
+*credential*
+*keystore*
+*truststore*
+*vault*
+*private*
