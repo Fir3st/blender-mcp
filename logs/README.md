@@ -30,3 +30,8 @@ call had begun; `in_flight` means work may continue despite the cancelled client
 `response_received` means the callback had returned. Queued calls are blocked
 after client cancellation. Batch failures preserve frame locations. Older generic
 records remain readable, but omitted details cannot be recovered retroactively.
+
+Completed error responses also use `response_received`; a rejected RNA edit is
+not still running. Transport timeouts remain `in_flight` because execution may
+continue. Large execute-backend mesh/batch arguments are compressed and uploaded
+in 16 KiB chunks before dispatch; a failed transfer never retries the scene edit.

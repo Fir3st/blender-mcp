@@ -237,6 +237,70 @@ class BlenderConnectionTests(unittest.TestCase):
         self.assertLessEqual(max(sizes), 32768)
         self.assertFalse(runtime["_result_chunks"])
 
+    def test_large_execute_arguments_are_compressed_without_changing_geometry(self) -> None:
+        arguments = {"name": "Síť", "vertices": [[i / 16, j / 16, (i * j) / 256]
+                     for i in range(60) for j in range(64)],
+                     "faces": [[i, i + 1, i + 65, i + 64] for i in range(3746)]}
+        operations = [{"command": "create_mesh", "arguments": arguments}]
+        for type_, params, dispatch_name, expected in (
+            ("command", operations[0], "dispatch", ("create_mesh", arguments)),
+            ("batch", {"operations": operations}, "dispatch_batch", (operations,)),
+        ):
+            with self.subTest(type=type_):
+                runtime = {}
+                exec(server._BATCH_RUNTIME, runtime)
+                runtime[dispatch_name] = Mock(return_value={"created": True})
+                runtime["_library_id"] = server._command_library()[1]
+                bpy = types.ModuleType("bpy")
+                bpy.app = types.SimpleNamespace(driver_namespace={"blender_mcp_local_command_runtime": runtime})
+                connection = BlenderConnection("127.0.0.1", 9876)
+                sizes = []
+
+                def request(message):
+                    sizes.append(len(json.dumps(message).encode()))
+                    if sizes[-1] > 32768:
+                        raise RuntimeError("Test endpoint request budget exceeded")
+                    namespace = {}
+                    exec(message["code"], namespace)
+                    return {"status": "ok", "result": namespace["result"]}
+
+                with patch.dict(sys.modules, {"bpy": bpy}), patch.object(connection, "_request", side_effect=request):
+                    self.assertEqual(connection._execute_library_request(type_, params), {"created": True})
+                runtime[dispatch_name].assert_called_once_with(*expected)
+                self.assertLessEqual(max(sizes), 32768)
+                self.assertNotIn("_pending_request", runtime)
+
+    def test_failed_argument_upload_or_dispatch_is_cleaned_up_without_retry(self) -> None:
+        params = {"command": "create_mesh", "arguments": {
+            "name": "Large", "vertices": [[i, i + 1, i + 2] for i in range(4000)]}}
+        for failure in ("upload", "dispatch"):
+            with self.subTest(failure=failure):
+                runtime = {}
+                exec(server._BATCH_RUNTIME, runtime)
+                runtime["dispatch"] = Mock(side_effect=RuntimeError("Scene operation failed"))
+                runtime["_library_id"] = server._command_library()[1]
+                bpy = types.ModuleType("bpy")
+                bpy.app = types.SimpleNamespace(driver_namespace={"blender_mcp_local_command_runtime": runtime})
+                connection = BlenderConnection("127.0.0.1", 9876)
+                uploads = []
+
+                def request(message):
+                    namespace = {}
+                    exec(message["code"], namespace)
+                    result = namespace["result"]
+                    if "uploaded" in result:
+                        uploads.append(result["uploaded"])
+                        if failure == "upload" and len(uploads) == 2:
+                            raise RuntimeError("Connection timed out after upload")
+                    return {"status": "ok", "result": result}
+
+                with patch.dict(sys.modules, {"bpy": bpy}), patch.object(connection, "_request", side_effect=request):
+                    with self.assertRaises(RuntimeError):
+                        connection._execute_library_request("command", params)
+                self.assertGreaterEqual(len(uploads), 2)
+                self.assertEqual(runtime["dispatch"].call_count, 0 if failure == "upload" else 1)
+                self.assertNotIn("_pending_request", runtime)
+
     def test_failed_result_transfer_never_repeats_the_scene_operation(self) -> None:
         runtime = {"dispatch": Mock(return_value={"data": "x" * 50000})}
         exec(server._BATCH_RUNTIME, runtime)

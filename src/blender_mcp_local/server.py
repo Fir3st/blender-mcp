@@ -14,6 +14,7 @@ import struct
 import threading
 import textwrap
 import zlib
+import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -168,6 +169,11 @@ class BlenderConnection:
     @staticmethod
     def _result(response: dict[str, Any]) -> Any:
         if response.get("status") not in ("ok", "success"):
+            # A remote operation failure is a completed response, unlike a
+            # socket timeout where the scene operation may still be running.
+            context = _error_context.get()
+            if context is not None:
+                context["execution_state"] = "response_received"
             raise RuntimeError(response.get("message", "Unknown Blender error"))
         return response.get("result", {})
 
@@ -228,18 +234,72 @@ result = {{'api_version': 1, 'library_id': runtime['_library_id']}}
         if type_ not in {"command", "batch"}:
             raise ValueError("Unsupported command-runtime request")
         _, library_id = _command_library()
-        payload = json.dumps(params, allow_nan=False)
+        payload = json.dumps(params, allow_nan=False, separators=(",", ":"))
+        if len(payload.encode("utf-8")) > MAX_RESULT_BYTES:
+            raise ValueError("Blender request exceeds the 64 MiB message limit")
+        decode = f"json.loads({payload!r})"
+        staged = None
+        chunks = []
+        if len(payload) > EXECUTE_CHUNK_BYTES:
+            encoded = base64.b64encode(zlib.compress(payload.encode("utf-8"))).decode("ascii")
+            decode = f"json.loads(zlib.decompress(base64.b64decode({encoded!r})))"
+            if len(encoded) > EXECUTE_CHUNK_BYTES:
+                staged = uuid.uuid4().hex
+                chunks = [encoded[offset:offset + EXECUTE_CHUNK_BYTES]
+                          for offset in range(0, len(encoded), EXECUTE_CHUNK_BYTES)]
+                decode = "json.loads(zlib.decompress(base64.b64decode(''.join(pending['chunks']))))"
+        consume = "" if staged is None else f"""    pending = runtime.get('_pending_request')
+    if not isinstance(pending, dict) or pending.get('id') != {staged!r}:
+        raise RuntimeError('Blender argument upload was replaced; no scene operation started')
+    runtime.pop('_pending_request')
+"""
         invocation = "runtime['dispatch'](params['command'], params['arguments'])" if type_ == "command" else "runtime['dispatch_batch'](params['operations'])"
         code = f"""
-import bpy, json
-params = json.loads({payload!r})
+import bpy, json, base64, zlib
 runtime = bpy.app.driver_namespace.get('blender_mcp_local_command_runtime')
 if not isinstance(runtime, dict) or runtime.get('_library_id') != {library_id!r}:
     result = {{'_mcp_runtime_missing': True}}
 else:
+{consume}    params = {decode}
     result = runtime['transport_result']({invocation})
 """
-        return self._read_execute_result(self.execute_code(code))
+        if staged is None:
+            return self._read_execute_result(self.execute_code(code))
+        # The execute-only endpoint receives little data per UI tick. Stage
+        # bounded chunks, then invoke the scene operation exactly once. A single
+        # pending slot bounds abandoned uploads; IDs detect competing clients.
+        try:
+            for index, chunk in enumerate(chunks):
+                initialize = f"runtime['_pending_request'] = {{'id': {staged!r}, 'chunks': []}}" if index == 0 else ""
+                result = self.execute_code(f"""
+import bpy
+runtime = bpy.app.driver_namespace.get('blender_mcp_local_command_runtime')
+if not isinstance(runtime, dict) or runtime.get('_library_id') != {library_id!r}:
+    result = {{'_mcp_runtime_missing': True}}
+else:
+    {initialize}
+    pending = runtime.get('_pending_request')
+    if not isinstance(pending, dict) or pending.get('id') != {staged!r}:
+        raise RuntimeError('Blender argument upload was replaced; no scene operation started')
+    pending['chunks'].append({chunk!r})
+    result = {{'uploaded': {index + 1}}}
+""")
+                if result == {"_mcp_runtime_missing": True}:
+                    return result
+                if result != {"uploaded": index + 1}:
+                    raise RuntimeError("Invalid Blender argument upload acknowledgement")
+            return self._read_execute_result(self.execute_code(code))
+        finally:
+            try:
+                self.execute_code(f"""
+import bpy
+runtime = bpy.app.driver_namespace.get('blender_mcp_local_command_runtime')
+if isinstance(runtime, dict) and runtime.get('_pending_request', {{}}).get('id') == {staged!r}:
+    runtime.pop('_pending_request')
+result = {{}}
+""")
+            except RuntimeError:
+                pass
 
     def _read_execute_result(self, result: Any) -> Any:
         if not isinstance(result, dict) or set(result) != {"_mcp_chunked_result"}:

@@ -49,6 +49,25 @@ class BlenderIntegrationTests(unittest.TestCase):
         assigned = self.cmd("assign_face_material", object_name=name, material_name="FaceMaterial", face_indices=[0])
         self.assertEqual(self.cmd("get_mesh_data", object_name=name, domain="FACE", offset=0, limit=1)["items"][0]["material_index"], assigned["slot"])
 
+    def test_large_mesh_arguments_roundtrip_in_single_commands_and_batches(self):
+        vertices = [[i / 16, j / 16, (i * j) / 256] for i in range(60) for j in range(64)]
+        faces = [[i * 64 + j, i * 64 + j + 1, (i + 1) * 64 + j + 1, (i + 1) * 64 + j]
+                 for i in range(59) for j in range(63)]
+        self.cmd("get_blender_info")  # Exclude one-time runtime installation.
+        with patch.object(self.connection, "_request", wraps=self.connection._request) as request:
+            direct = self.cmd("create_mesh", name="LargeDirect", vertices=vertices, faces=faces)["name"]
+            batch = self.connection.send_batch([{"command": "create_mesh", "arguments": {
+                "name": "LargeBatch", "vertices": vertices, "faces": faces}}])
+            self.assertFalse(batch["failed"], batch)
+            for name in (direct, batch["results"][0]["result"]["name"]):
+                geometry = self.cmd("get_mesh_data", object_name=name, domain="VERT", limit=10000)
+                self.assertEqual([item["coordinate"] for item in geometry["items"]], vertices)
+                topology = self.cmd("get_mesh_data", object_name=name, domain="FACE", limit=10000)
+                self.assertEqual([item["vertices"] for item in topology["items"]], faces)
+        if self.connection.backend == "execute":
+            self.assertLessEqual(max(len(json.dumps(call.args[0]).encode())
+                                     for call in request.call_args_list), 32768)
+
     def test_all_bmesh_edit_operations(self):
         cases = [
             ("EXTRUDE", "FACE", [0], {"offset": [0, 0, 0.5]}),

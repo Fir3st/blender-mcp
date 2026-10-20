@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.8 — 2026-10-20
+
+- Compress large execute-backend mesh/batch arguments and upload them in 16 KiB chunks before dispatch, avoiding oversized single execute requests.
+- Clean up failed uploads and dispatch scene operations only once; transport failures never automatically retry an edit.
+- Record completed remote error responses as `response_received`, while connection timeouts remain `in_flight`.
+- Add regressions for lossless large geometry transfer, failed upload/dispatch cleanup and execution-state diagnostics. Verified with 59 unit tests and 29 Blender integration tests in each native and execute-only mode.
+- Native RPC API remains 1. Existing API-1 addons and the official Blender Lab extension remain compatible; update and restart the Python bridge to load these fixes.
+
 ## 1.0.7 — 2026-10-03
 
 - Validate mesh-edit operation/domain compatibility and settings keys before Blender dispatch, including full batch preflight before earlier steps mutate the scene.

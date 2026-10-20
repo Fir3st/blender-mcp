@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.shared.memory import create_connected_server_and_client_session
 from blender_mcp_local import server
 from blender_mcp_local.error_log import ErrorJournal
@@ -41,6 +42,32 @@ class ErrorLogTests(unittest.IsolatedAsyncioTestCase):
                 result = await client.call_tool(tool, arguments)
                 self.assertTrue(result.isError)
         self.assertEqual(len(self.journal.read()["events"]), 2)
+
+    async def test_remote_operation_error_is_a_received_response_not_in_flight(self):
+        for backend in ("native", "execute"):
+            with self.subTest(backend=backend):
+                connection = server.BlenderConnection("127.0.0.1", 9876)
+                connection.library_ready = True
+                connection.backend = backend
+                with patch.object(server, "_get_conn", return_value=connection), patch.object(
+                    connection, "_request", return_value={"status": "error", "message": "ValueError: Unknown RNA property: unavailable"}
+                ):
+                    with self.assertRaises(ToolError):
+                        await server.mcp.call_tool("get_properties", {"target": "SCENE", "paths": ["unavailable"]})
+                event = self.journal.read()["events"][-1]
+                self.assertEqual(event["execution_state"], "response_received")
+                self.assertEqual(event["error_type"], "ValueError")
+
+    async def test_connection_timeout_remains_in_flight_and_is_not_retried(self):
+        connection = server.BlenderConnection("127.0.0.1", 9876)
+        connection.library_ready = True
+        with patch.object(server, "_get_conn", return_value=connection), patch.object(
+            connection, "_request", side_effect=RuntimeError("Blender connection error: timed out")
+        ) as request:
+            with self.assertRaises(ToolError):
+                await server.mcp.call_tool("get_scene_info", {})
+        request.assert_called_once()
+        self.assertEqual(self.journal.read()["events"][-1]["execution_state"], "in_flight")
 
     async def test_batch_step_failure_has_its_tool_index_and_no_duplicate_event(self):
         connection = Mock()
