@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.9 — 2026-10-20
 
 - Preserve requested node names when they collide with Blender's temporary/default names during graph creation or replacement.
 - Restore original graph links after a failed edit, even when Blender's input-link limits already deleted an earlier newly created link. Preserve link mute state and remove all newly created nodes without dereferencing deleted RNA handles.

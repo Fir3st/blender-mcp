@@ -4,7 +4,7 @@ sent by the local MCP bridge. No external services, no telemetry."""
 bl_info = {
     "name": "Blender MCP (Local)",
     "author": "blende-mcp",
-    "version": (1, 0, 8),
+    "version": (1, 0, 9),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > MCP",
     "description": "Local MCP bridge — exposes a TCP socket so an MCP server can drive Blender.",
@@ -39,7 +39,7 @@ class LibraryNotLoaded(RuntimeError):
 
 
 def cmd_bridge_info(_params):
-    return {"api_version": 1, "addon_version": "1.0.8", "library_id": _library_id}
+    return {"api_version": 1, "addon_version": "1.0.9", "library_id": _library_id}
 
 
 def cmd_load_command_library(params):

@@ -1,4 +1,4 @@
-# Blender MCP Local — detailed guide (1.0.8)
+# Blender MCP Local — detailed guide (1.0.9)
 
 A local, **tool-first MCP for Blender**: 118 tools for modeling, materials, Geometry Nodes, rigging, animation, collisions, physics, lighting, rendering, file operations, and local error diagnostics. Clients primarily compose specific operations; custom Python is a justified fallback for capabilities not covered by tools.
 
@@ -25,7 +25,7 @@ With this transport, the client still calls dedicated tools such as `create_obje
 In Blender, open `Preferences → Add-ons → Install from Disk…` and select:
 
 ```text
-dist/blender-mcp-local-addon-1.0.8.zip
+dist/blender-mcp-local-addon-1.0.9.zip
 ```
 
 Generate this archive first with `python tools/build_release.py` if it is not available. Enable **Blender MCP (Local)**. In the 3D viewport, open the sidebar (`N`), select the **MCP** tab, and click **Start MCP Server**. The default address is `127.0.0.1:9876`.
@@ -46,7 +46,7 @@ blender-mcp-local --version
 Alternatively, install a previously built source package:
 
 ```bash
-pip install dist/blender_mcp_local-1.0.8.tar.gz
+pip install dist/blender_mcp_local-1.0.9.tar.gz
 ```
 
 ### 3. Connect an MCP client
@@ -82,11 +82,15 @@ The configuration variables `BLENDER_HOST`, `BLENDER_PORT`, `BLENDER_TIMEOUT`, a
 
 ### Upgrading from 0.4.0
 
-1. If you use the bundled 0.4.0 addon, stop its server and replace it with version 1.0.8.
+1. If you use the bundled 0.4.0 addon, stop its server and replace it with version 1.0.9.
 2. Update the Python bridge and restart its process.
 3. Refresh the MCP connection so the client loads the new instructions and schemas.
 
 The bundled native-RPC addon requires API 1 (version 1.0.x). The official Blender Lab extension can remain unchanged; updating/restarting the bridge is sufficient. The bridge also recognizes older execute-compatible endpoints. Python fallback now also requires `fallback_reason` and `tools_considered`.
+
+### Node graph fixes in 1.0.9
+
+Graph creation and replacement preserve requested node names even when Blender's default names collide. Failed rewiring restores original links and removes newly created nodes, including when input-link limits have already deleted an earlier new link. Error journals now distinguish unavailable node types, missing nodes/trees, invalid links, non-pointer RNA paths, non-mesh inputs and refused connections without recording raw argument values.
 
 ### Large requests and execution-state diagnostics in 1.0.8
 
