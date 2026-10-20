@@ -10,7 +10,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = [
-    "addon.py", "pyproject.toml", "uv.lock", "README.md", "CHANGELOG.md", "docs/usage.md", "LICENSE", "NOTICE",
+    "addon.py", "pyproject.toml", "uv.lock", "README.md", "CHANGELOG.md", "docs/usage.md",
+    "docs/clients.md", "docs/troubleshooting.md", "LICENSE", "NOTICE",
     "src/blender_mcp_local/__init__.py", "src/blender_mcp_local/server.py", "src/blender_mcp_local/advanced.py",
     "src/blender_mcp_local/production.py",
     "src/blender_mcp_local/error_log.py", "tests/test_error_log.py", "tests/test_lifecycle.py", "logs/README.md",

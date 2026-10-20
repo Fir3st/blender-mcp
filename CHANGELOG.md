@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Rewrite the documentation around a client-independent local stdio contract instead of a specific MCP client.
+- Add a client setup guide with per-client entry points for Pi, Claude, Codex, VS Code, Cursor, Windsurf, and OpenCode, plus a generic configuration path.
+- Add a troubleshooting guide for missing tools, connection failures, timeouts, stale processes, Windows paths, and safe log inspection.
+- Remove client-specific assumptions from the error-journal documentation and the main quick start.
+- Include the new guides in the source release archive.
+
 ## 1.0.10 — 2026-10-20
 
 - Exit a stdio bridge whose MCP client has ended but still holds stdin/stdout open. A standard MCP ping after 60 seconds of inactivity distinguishes an idle live client from an abandoned session; two unanswered probes terminate the process.

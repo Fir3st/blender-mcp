@@ -1,38 +1,65 @@
-# Blender MCP Local — detailed guide (1.0.10)
+# Blender MCP Local — detailed guide
 
-A local, **tool-first MCP for Blender**: 118 tools for modeling, materials, Geometry Nodes, rigging, animation, collisions, physics, lighting, rendering, file operations, and local error diagnostics. Clients primarily compose specific operations; custom Python is a justified fallback for capabilities not covered by tools.
+A local, **tool-first MCP server for Blender**: 118 tools for modeling, materials, Geometry Nodes, rigging, animation, collisions, physics, lighting, rendering, file operations, and local error diagnostics. Clients primarily compose specific operations; custom Python is a justified fallback for capabilities not covered by tools.
 
-- Blender ↔ MCP over localhost; MCP client ↔ server over stdio.
-- Custom shader and Geometry Nodes graphs, BMesh editing, UVs, and rig weights through declarative tools.
-- Collision proxies, intersection checks, physics joints/baking, IK with pole targets, weight cleanup/transfer, drivers, and visual animation baking.
-- Batches of up to 100 operations in one Blender request, with references to previous results.
-- No external asset services, telemetry, or cloud accounts.
-- Python 3.10+, MCP SDK 1.27.x/1.x, and Pydantic 2.x.
-- Blender 4.2+ API target; integration-tested on **Blender 5.1.1**.
+The server is **client-independent**. It exposes standard MCP over local stdio, and any client that can launch a local stdio server can use it. Client-specific configuration lives in [Connecting an MCP client](clients.md); this guide focuses on the bridge, Blender, and the tools.
 
-Run the commands in this guide from the project root.
+## Contents
 
-## Quick start
+- [How it works](#how-it-works)
+- [Requirements and compatibility](#requirements-and-compatibility)
+- [Install the bridge](#install-the-bridge)
+- [Start the Blender endpoint](#start-the-blender-endpoint)
+- [Connect an MCP client](#connect-an-mcp-client)
+- [Verify the connection](#verify-the-connection)
+- [Bridge options and runtime](#bridge-options-and-runtime)
+- [Upgrading](#upgrading)
+- [Tool catalog](#tool-catalog)
+- [Workflow](#workflow)
+- [Batches and actual object names](#batches-and-actual-object-names)
+- [Lights, cameras, and render settings without Python](#lights-cameras-and-render-settings-without-python)
+- [Modifiers: names, references, and actual completion](#modifiers-names-references-and-actual-completion)
+- [Shader, Geometry Nodes, and compositor](#shader-geometry-nodes-and-compositor)
+- [Modeling, UVs, and characters](#modeling-uvs-and-characters)
+- [Collisions and collision proxies](#collisions-and-collision-proxies)
+- [Physics and baking](#physics-and-baking)
+- [Advanced rigging, weights, and drivers](#advanced-rigging-weights-and-drivers)
+- [Python fallback](#python-fallback)
+- [Security, limits, and cancellation](#security-limits-and-cancellation)
+- [Troubleshooting](#troubleshooting)
+- [Architecture](#architecture)
+- [Tests and releases](#tests-and-releases)
 
-### 1. Connect a running Blender integration
-
-**If you already use the official Blender Lab MCP integration in Blender 5.1+, you do not need to install our addon.** Start its server at `127.0.0.1:9876` and use `--protocol legacy`. The bridge automatically recognizes the official execute-only protocol and preserves dedicated MCP tools and batches. See the [official installation instructions](https://www.blender.org/lab/mcp-server/).
-
-With this transport, the client still calls dedicated tools such as `create_object` or `configure_ik`. The bridge translates these calls into the official `execute` wire protocol using its compressed library, loaded once; this is not a client-generated Python fallback.
-
-#### Bundled addon — optional alternative
-
-In Blender, open `Preferences → Add-ons → Install from Disk…` and select:
+## How it works
 
 ```text
-dist/blender-mcp-local-addon-1.0.10.zip
+MCP client ← stdio → Python bridge ← localhost TCP → Blender endpoint
+                                              ↓
+                                   main-thread command runtime
 ```
 
-Generate this archive first with `python tools/build_release.py` if it is not available. Enable **Blender MCP (Local)**. In the 3D viewport, open the sidebar (`N`), select the **MCP** tab, and click **Start MCP Server**. The default address is `127.0.0.1:9876`.
+- The MCP client starts the bridge and communicates with it over standard input/output.
+- The bridge owns the 118 tool schemas, validates arguments, serializes Blender access, and translates tool calls into the endpoint's operation runtime.
+- The Blender endpoint executes scene work on Blender's main thread.
+- The default endpoint is `127.0.0.1:9876`; the bridge can use the bundled addon or the official Blender Lab execute-compatible endpoint.
+- No external asset service, cloud account, or telemetry is involved.
 
-The standalone `addon.py` can also be used for installation or development. The ZIP contains the same addon in a standard package structure.
+Custom Python is available through `execute_blender_code` only when dedicated tools cannot express the operation. The bridge does not generate Python for supported tool calls, and the fallback is not a substitute for the tool API.
 
-### 2. Install the MCP bridge
+## Requirements and compatibility
+
+| Component | Requirement |
+|---|---|
+| Python | 3.10 or newer |
+| MCP Python SDK | 1.27+ (`<2`) |
+| Pydantic | 2.x |
+| Blender | 4.2+ API target; integration-tested on 5.1.1 |
+| MCP client | Any client that supports local stdio servers and tools |
+| Blender endpoint | Bundled addon, or the official Blender Lab MCP endpoint |
+
+The optional native-RPC addon requires API **1** (the 1.0.x addon line). The official Blender Lab extension can remain unchanged; the bridge detects its execute-only protocol automatically. Both transports use the same dedicated MCP tools and batch behavior.
+
+## Install the bridge
 
 From the project root:
 
@@ -43,105 +70,131 @@ pip install -e .
 blender-mcp-local --version
 ```
 
-Alternatively, install a previously built source package:
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1`.
+
+Alternatively, build and install a generated source package:
 
 ```bash
-pip install dist/blender_mcp_local-1.0.10.tar.gz
+python tools/build_release.py
+ls dist
+pip install dist/blender_mcp_local-1.0.10.tar.gz   # replace with the generated version
 ```
 
-### 3. Connect an MCP client
+`dist/` is generated locally and is not part of the source repository. Build it with `python tools/build_release.py`.
 
-For Claude Desktop and clients using `mcpServers`:
+## Start the Blender endpoint
 
-```json
-{
-  "mcpServers": {
-    "blender-local": {
-      "command": "/path/to/.venv/bin/blender-mcp-local",
-      "args": ["--protocol", "legacy"]
-    }
-  }
-}
+Choose one endpoint. The bridge defaults to `127.0.0.1:9876`.
+
+### Option A: bundled addon
+
+Build the addon archive if needed:
+
+```bash
+python tools/build_release.py
 ```
 
-In other MCP clients, choose a local **stdio** server and the same executable command. After connecting, start with `get_blender_info`.
+In Blender, open `Preferences → Add-ons → Install from Disk…` and select the generated `dist/blender-mcp-local-addon-*.zip`. Enable **Blender MCP (Local)**. In the 3D viewport, open the sidebar (`N`), select the **MCP** tab, and click **Start MCP Server**.
 
-Optional bridge arguments:
+The addon's socket server runs inside Blender and stops when Blender exits or when you stop the server in the panel. The addon auto-detects the bridge's socket framing, so no framing option is required.
 
-```text
---host 127.0.0.1
---port 9876
---timeout 180
---session-timeout 60
---protocol legacy|length
---version
---error-log /absolute/path/errors.jsonl
---no-error-log
+### Option B: official Blender Lab endpoint
+
+Follow the [official Blender Lab MCP instructions](https://www.blender.org/lab/mcp-server/) and start its endpoint at `127.0.0.1:9876`. No custom addon is needed. The bridge recognizes the execute-only endpoint and loads its compressed command runtime automatically.
+
+The client still calls dedicated tools such as `create_object` or `configure_ik`; this translation is not client-generated Python.
+
+## Connect an MCP client
+
+The bridge is a standard local stdio server. Use this canonical definition in your client:
+
+| Setting | Value |
+|---|---|
+| Transport | `stdio` |
+| Command | `/absolute/path/to/project/.venv/bin/blender-mcp-local` |
+| Arguments | none required |
+| Server name | any; examples use `blender-local` |
+
+No arguments are needed for the default host, port, and framing. Some clients prefix displayed tool names with the server name; `get_tool_help` accepts the common prefixed forms. If your client has separate `command` and `args` fields, keep the executable and flags separate. If it accepts a command array, put the executable first.
+
+Do not copy another client's wrapper file into a different client. Client configuration locations and formats differ; see [Connecting an MCP client](clients.md) for the client directory, selected examples, Windows path rules, and reload behavior.
+
+There is no HTTP or SSE endpoint for the MCP client. The bridge-to-Blender TCP connection is internal and controlled by `--host`, `--port`, and `--protocol`.
+
+## Verify the connection
+
+After the client starts the server:
+
+1. Call `get_blender_info` to inspect the bridge, the active Blender transport, and capabilities.
+2. Call `get_scene_info` to confirm that Blender is reachable.
+3. Use `search_tools` and `get_tool_help` to discover a tool and its exact schema.
+
+`search_tools` and `get_tool_help` work without a running Blender instance. Scene tools report a connection error when the Blender endpoint is unavailable.
+
+## Bridge options and runtime
+
+The bridge is launched by the MCP client, not by a separate daemon. It has no configuration file of its own: options are passed in the client's server entry as command-line arguments or environment variables. Its command-line options control the Python process:
+
+| Option | Default | Environment | Purpose |
+|---|---:|---|---|
+| `--host` | `127.0.0.1` | `BLENDER_HOST` | Blender endpoint host |
+| `--port` | `9876` | `BLENDER_PORT` | Blender endpoint port |
+| `--timeout` | `180` | `BLENDER_TIMEOUT` | Socket timeout in seconds |
+| `--session-timeout` | `60` | `BLENDER_SESSION_TIMEOUT` | Idle seconds before an MCP liveness ping; `0` disables probing |
+| `--protocol` | `legacy` | `BLENDER_PROTOCOL` | Bridge-to-Blender framing: `legacy` or `length` |
+| `--error-log` | automatic | — | Write the sanitized JSONL journal to a specific path |
+| `--no-error-log` | off | — | Disable the persistent journal |
+| `--version` | — | — | Print the bridge version and exit |
+
+CLI arguments take precedence over environment variables. For long renders, increase `--timeout` and the client's own tool timeout; they are separate limits.
+
+### MCP lifecycle and stale processes
+
+The MCP client ↔ bridge transport is stdio. Closing stdin, losing the client process, or an MCP disconnect ends the session. When stdio is idle, the bridge sends a standard MCP liveness ping after `--session-timeout` seconds:
+
+- A live client answers the ping, so a session can remain idle indefinitely.
+- A client that has ended but still holds the stdio pipes open does not answer; after two unanswered probes the bridge closes the Blender socket and exits.
+- `--session-timeout 0` disables probing for clients that do not implement server-initiated pings.
+
+This prevents an old bridge from surviving a client restart or update. If a process from a pre-1.0.10 version is already stuck, stop it once with:
+
+```bash
+pkill -f blender-mcp-local
 ```
 
-The configuration variables `BLENDER_HOST`, `BLENDER_PORT`, `BLENDER_TIMEOUT`, `BLENDER_PROTOCOL` and `BLENDER_SESSION_TIMEOUT` remain supported. CLI arguments take precedence. For long renders, set appropriate timeouts in both the bridge and the MCP client.
+Do not use that command while an active session is using the bridge.
 
-When stdio is idle, the bridge sends a standard MCP liveness ping. A live client answers, so the session can stay idle indefinitely; a client that has ended but still holds the pipes open does not answer and the bridge exits after two probes. `--session-timeout 0` disables probing. Closing stdin or losing the client process also ends the bridge. This prevents stale old versions from remaining after an update. If processes from a pre-1.0.10 version are already stuck, stop them once with `pkill -f blender-mcp-local`.
+### Error journal
 
-### Upgrading from 0.4.0
+When launched through the CLI, the bridge writes a private local error journal:
 
-1. If you use the bundled 0.4.0 addon, stop its server and replace it with version 1.0.10.
-2. Update the Python bridge and restart its process.
-3. Refresh the MCP connection so the client loads the new instructions and schemas.
+- Editable checkout: `logs/errors.jsonl`
+- Installed package: `~/.local/state/blender-mcp-local/errors.jsonl`
 
-The bundled native-RPC addon requires API 1 (version 1.0.x). The official Blender Lab extension can remain unchanged; updating/restarting the bridge is sufficient. The bridge also recognizes older execute-compatible endpoints. Python fallback now also requires `fallback_reason` and `tools_considered`.
+Use `get_error_log(limit=20)` to read recent events and `get_error_log_status()` to inspect configuration. The journal records a timestamp/ID, version, tool, error class, fixed diagnostic summary, frame locations, argument types/counts, and an optional batch index. It deliberately excludes raw argument values, custom code, stdout, local variables, and arbitrary exception text.
 
-### Node graph fixes in 1.0.9
+Files rotate at 5 MiB with two backups and are created with private permissions (0600). Logging failures do not replace the original error. Use `--error-log /absolute/path/errors.jsonl` or `--no-error-log` to change behavior. See [logs/README.md](../logs/README.md) for the full contract.
 
-Graph creation and replacement preserve requested node names even when Blender's default names collide. Failed rewiring restores original links and removes newly created nodes, including when input-link limits have already deleted an earlier new link. Error journals now distinguish unavailable node types, missing nodes/trees, invalid links, non-pointer RNA paths, non-mesh inputs and refused connections without recording raw argument values.
+### Why `--protocol` is not an MCP client setting
 
-### Large requests and execution-state diagnostics in 1.0.8
+`--protocol legacy|length` selects the framing used on the local TCP socket between the bridge and Blender. It does not configure the MCP client and does not change the stdio transport. The default `legacy` works with both supported Blender endpoints. Change it only when you have a specific endpoint requirement.
 
-Large mesh/batch arguments sent through the execute-compatible backend are compressed and uploaded in 16 KiB chunks before the scene operation runs. Failed transfers are cleaned up without automatically repeating an edit. Completed remote error responses now use `response_received`; connection timeouts remain `in_flight` because work may continue in Blender. Existing error records are preserved.
+## Upgrading
 
-### Mesh preflight in 1.0.7
+1. Stop the old bridge process or let its client session end.
+2. Update the Python package and restart the bridge.
+3. Refresh or reconnect the MCP session so the client loads the new instructions and schemas.
+4. If you replaced the bundled addon, restart its server in Blender.
 
-`mesh_edit` requires EXTRUDE/INSET/TRIANGULATE in the FACE domain, BEVEL/SUBDIVIDE in EDGE, and TRANSFORM in VERT; DELETE supports all domains. Domain mismatches or unknown settings are rejected while preparing an MCP batch, before its earlier steps execute. Domains are not silently inferred or rewritten.
+Existing API-1 addons remain compatible with the 1.0.x bridge. The official Blender Lab extension normally needs no update; restarting the bridge is enough to load new scene-operation code.
 
-### More precise arguments and diagnostics in 1.0.6
+If you are upgrading from the old 0.4.0 addon, replace it with the current 1.0.x addon before using the current bridge. The current bridge also recognizes older execute-compatible endpoints.
 
-`set_object_origin` publishes the exact GEOMETRY/CURSOR/CENTER_OF_MASS/CENTER_OF_VOLUME modes and MEDIAN/BOUNDS center choices in its argument schema. Unsupported modes are not approximated. `get_tool_help` also accepts known client prefixes (`blender_`, `mcp__blender__`, `mcp_blender_local_`, `mcp__blender_local__`). Unknown tools are still rejected.
+Detailed per-release changes, compatibility notes, and verification counts are in [CHANGELOG.md](../CHANGELOG.md).
 
-RNA boolean/string/enum values receive preliminary type validation; enum-flag lists are converted to actual sets. Blender still validates dynamic scalar enum entries. The journal distinguishes objects outside the view layer, unsupported origins, unknown tools, and RNA type errors. Joining still does not automatically link external or hidden objects, and validation is not bypassed. Old records without argument values cannot be retroactively supplemented.
+## Tool catalog
 
-### RNA matrices and cancelled requests in 1.0.5
-
-`get_properties` recursively converts RNA vectors/matrices into JSON. Numeric arrays report `array_dimensions`; `set_properties` accepts correctly shaped matrices as lists of rows, uses an actual `Matrix` for assignment, and restores a deep copy of the original value on failure. Scalar drivers require `index=-1`; arrays require an explicit valid index.
-
-Batch errors now preserve stack information for the safe error journal, and summaries distinguish additional validation reasons. A cancelled request still waiting for the Blender lock is not dispatched. If it has already been sent, Blender may continue — this is not rollback. The journal records `execution_state` (`not_started`, `in_flight`, `response_received`) for these events. Old records remain unchanged; omitted original argument values or stack data from 1.0.4 cannot be reconstructed.
-
-### Current file and error journal in 1.0.4
-
-`append_datablocks` can list/append data from the currently open `.blend` through a temporary copy of its **last saved version**, created in the same directory. Relative paths remain based on the original directory; the working file is not saved or overwritten. The source directory must allow creating/removing the temporary copy. Use `duplicate_object` for live unsaved objects; `link=True` back into the current file is rejected.
-
-When launched through the CLI, the bridge automatically writes a local error journal. In this project it is `logs/errors.jsonl`; installed packages use `~/.local/state/blender-mcp-local/errors.jsonl`. Find its location with `get_error_log_status()` and read recent errors with `get_error_log(limit=20)`, for example `get_error_log(limit=10, tool="append_datablocks")`.
-
-Each record contains a timestamp/ID, version, tool, error class, fixed diagnostic summary, stack-frame locations, argument types/counts, and an optional batch-step index. **It does not record raw argument values, custom code, stdout, local variables, or arbitrary exception text.** Details of unknown general errors are deliberately omitted. MCP validation errors, Blender/transport exceptions, and batch error results are captured without duplicate records. Client-only errors and past calls made before logging was enabled cannot be recovered.
-
-The file has private permissions (0600) and rotates at 5 MiB with two backups. Logging failures do not replace the original error; check `last_write_error`. Optionally use `--error-log` or `--no-error-log`. See [logs/README.md](../logs/README.md) for details.
-
-### Socket selection in 1.0.3
-
-Duplicate display names, such as `From Min` on Map Range, are resolved using the single allowed and available socket in the node's current mode. Genuine ambiguity is still rejected; the error includes candidate indices/identifiers. `get_node_tree` also returns `enabled` and `available`. An index or unique identifier remains an explicit choice with unchanged behavior.
-
-### Fix in 1.0.2
-
-`clean_mesh` does not assume dictionary results from the BMesh operations `remove_doubles` and `dissolve_degenerate`, which return `None` in Blender 5.1.1. For merging, `affected` reports the actual reduction in vertices. For dissolving, it reports the sum of reductions in vertices, edges, and faces; individual counts are also returned. The original mesh is written only after all enabled operations complete. Restart the bridge after updating.
-
-### Fixes in 1.0.1
-
-Restart the bridge and refresh the MCP connection. The official Blender Lab extension is unchanged; scene-operation fixes are in the newly loaded command library. The optional native 1.0.0 addon remains compatible; the package contains 1.0.1 with the same RPC API 1.
-
-Execute transport transfers large results in 16 KiB chunks with length and SHA-256 checks. Rendering runs once and returns the PNG at the original requested size. This does not reduce resolution or automatically repeat rendering. Temporary result storage is limited to four transfers / 64 MiB total; abandoned results expire.
-
-## Tools
-
-The server automatically sends exact argument schemas to the client. `search_tools` finds tools by task; `get_tool_help` returns complete documentation for a selected tool. Both work without a connected Blender instance.
+The server sends exact argument schemas to the client. `search_tools` finds tools by task; `get_tool_help` returns complete documentation for a selected tool. If a client displays tools with a server-name prefix, `get_tool_help` also accepts the known prefixes `blender_`, `mcp__blender__`, `mcp_blender_local_`, and `mcp__blender_local__`.
 
 | Area | Tools |
 |---|---|
@@ -164,7 +217,7 @@ The server automatically sends exact argument schemas to the client. `search_too
 | Files and assets | `import_asset`, `export_scene`, `append_datablocks`, `save_blend_file`, `save_checkpoint` |
 | Batches and fallback | `batch_tools`, `execute_blender_code` |
 
-### Workflow
+## Workflow
 
 1. Inspect scene state and Blender capabilities: `get_scene_info`, `get_blender_info`.
 2. Select tools: `search_tools`, `get_tool_help`; use `get_properties` for settings.
@@ -217,9 +270,9 @@ All tool names and argument schemas are validated before execution. Object exist
 
 Specify datablock pointers, such as a modifier target or a camera focus object, as `{"id_type":"OBJECT","name":"Subject"}`. `set_properties` accepts only RNA properties and rolls back changes if an assignment fails. It does not accept Python expressions or methods.
 
-### Modifiers: names, references, and actual completion
+## Modifiers: names, references, and actual completion
 
-Since 1.0.1, `add_modifier.settings` uses the same RNA reference conversion and validation as `set_properties`. A Boolean can be created directly:
+`add_modifier.settings` uses the same RNA reference conversion and validation as `set_properties`. A Boolean can be created directly:
 
 ```json
 {"object_name":"Body","type":"BOOLEAN","name":"Mouth cavity","settings":{"operation":"DIFFERENCE","solver":"EXACT","object":{"id_type":"OBJECT","name":"Cutter"}}}
@@ -231,7 +284,7 @@ The `studio` preset contains AREA, AREA, and POINT lights. `size` is not a POINT
 
 ### Render preview
 
-`render_preview(max_size)` returns an actual PNG as an MCP image and restores resolution, percentage, format, color mode, and bit depth. Large results over execute transport are transferred losslessly in chunks; the same mechanism works for batches and screenshots.
+`render_preview(max_size)` returns an actual PNG as an MCP image and restores resolution, percentage, format, color mode, and bit depth. Large results over the execute transport are transferred losslessly in chunks; the same mechanism works for batches and screenshots.
 
 Do not schedule a diagnostic render concurrently with the geometry changes it is meant to inspect. Socket operations are serialized, but the order of concurrently submitted requests does not replace a completed phase. After a lost connection, inspect state first; a transfer error does not automatically start a new render or repeat a scene operation.
 
@@ -328,7 +381,7 @@ Inspect drivers with `list_drivers` and remove them with `remove_driver`. After 
 
 ## Python fallback
 
-`execute_blender_code` is intended only for operations that cannot be expressed with available tools. Shader graphs, weights, IK, collision proxies, rigid-body baking, common drivers, UVs, and mesh editing are now covered. Examples of uncovered capabilities include specialized cloth/soft-body cache APIs or a driver outside the supported expression/variable model.
+`execute_blender_code` is intended only for operations that cannot be expressed with available tools. Shader graphs, weights, IK, collision proxies, rigid-body baking, common drivers, UVs, and mesh editing are covered. Examples of uncovered capabilities include specialized cloth/soft-body cache APIs or a driver outside the supported expression/variable model.
 
 ```json
 {
@@ -339,6 +392,41 @@ Inspect drivers with `list_drivers` and remove them with `remove_driver`. After 
 ```
 
 The server rejects missing/empty reasons, empty lists, and unknown or ineligible names. `search_tools` and `get_tool_help` may be listed **alongside at least one specific Blender operation tool**; discovery alone is insufficient. `execute_blender_code` and `batch_tools` are ineligible entries. The server does not automatically assess the truth of the reason; the client must follow the instructions. Supported setup and subsequent verification should use dedicated tools.
+
+## Security, limits, and cancellation
+
+**Use only with a trusted MCP client on your own computer.** The bridge can modify scenes, access files, and execute Python in Blender. It is not a security sandbox.
+
+- Do not expose the Blender TCP port to the internet or an untrusted network.
+- Save the scene or a checkpoint before destructive operations.
+- A client permission prompt is not a guarantee that an in-flight Blender operation can be stopped.
+- Cancelling an already dispatched request does not guarantee that the scene operation stops.
+- A failed or timed-out transfer does not automatically retry a mutation or render. Inspect scene state before retrying.
+- Batches are limited to 100 operations and are not transactions. Completed steps remain after a later failure.
+- Socket requests are serialized; concurrent submission order does not replace a completed verification phase.
+- The maximum Blender message size is 64 MiB. Execute-transport result storage is bounded to four transfers / 64 MiB total, and abandoned results expire.
+- The error journal stores sanitized summaries, not raw code or arguments, but may contain local paths. Review it before sharing.
+
+Execution-state values in the journal distinguish what happened:
+
+- `not_started`: no Blender call had begun.
+- `in_flight`: the request may still be running in Blender.
+- `response_received`: Blender returned a response, including an error response.
+
+A rejected RNA edit is not still running; a transport timeout can be `in_flight`.
+
+## Troubleshooting
+
+Start with:
+
+- **No tools in the client:** verify the absolute command path and restart/reconnect the MCP session.
+- **`Connection refused`:** start the Blender endpoint and confirm `127.0.0.1:9876`.
+- **Bridge exits immediately:** run `blender-mcp-local --version` manually and check the client's MCP log.
+- **Timeout during a long render:** raise both `--timeout` and the client's tool timeout.
+- **Old process survives:** update to 1.0.10+ and read [MCP lifecycle and stale processes](#mcp-lifecycle-and-stale-processes).
+- **Scene errors:** inspect `get_error_log(limit=20)` and the [local error journal](../logs/README.md).
+
+The full checklist, including Windows paths, project trust, protocol confusion, and safe log inspection, is in [Troubleshooting](troubleshooting.md).
 
 ## Architecture
 
@@ -385,4 +473,4 @@ Build local release archives using only the Python standard library:
 .venv/bin/python tools/build_release.py
 ```
 
-The outputs are an addon ZIP, a Python source package, and `dist/SHA256SUMS`. The build packages only explicitly listed project files. Both archives include the project license; the source package also includes this guide. See [CHANGELOG.md](../CHANGELOG.md) for changes and compatibility.
+The outputs are an addon ZIP, a Python source package, and `dist/SHA256SUMS`. The build packages only explicitly listed project files. Both archives include the project license; the source package also includes this guide, the client setup guide, the troubleshooting guide, and the error-journal documentation. See [CHANGELOG.md](../CHANGELOG.md) for changes and compatibility.

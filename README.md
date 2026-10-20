@@ -1,12 +1,14 @@
 # Blender MCP Local
 
-A local **Model Context Protocol (MCP)** server connecting AI clients to Blender. It provides 118 dedicated tools for creating and inspecting scenes, rather than requiring generated Python code for every operation.
+A local, **client-independent Model Context Protocol (MCP)** server for Blender. It exposes 118 dedicated tools for creating and inspecting scenes, instead of requiring generated Python for every operation.
+
+Any MCP client that can launch a local **stdio** server can use it. The bridge does not depend on a particular client, does not read client configuration files, and does not assume a specific config format.
 
 ```text
 MCP client ← stdio → Python bridge ← localhost TCP → Blender
 ```
 
-No cloud accounts, external asset services, or telemetry. Supports both the bundled addon and the execute-compatible endpoint of the official Blender Lab integration.
+No cloud accounts, external asset services, or telemetry. Works with the bundled Blender addon and with the execute-compatible endpoint of the official Blender Lab integration.
 
 ## Features
 
@@ -22,8 +24,9 @@ Custom Python is available as a fallback with a required explanation of the miss
 ## Requirements
 
 - Python **3.10+**.
-- Blender: **4.2+** API target; integration-tested on **5.1.1** according to the existing project documentation.
-- An MCP client supporting local stdio servers.
+- Blender: **4.2+** API target; integration-tested on **5.1.1**.
+- An MCP client that supports local **stdio** servers and tools.
+- Either the bundled Blender addon or the official Blender Lab MCP endpoint.
 
 ## Quick start
 
@@ -38,35 +41,47 @@ pip install -e .
 blender-mcp-local --version
 ```
 
-On Windows, use `.venv\Scripts\Activate.ps1` in PowerShell instead of `source`.
+On Windows, activate the environment with `.venv\Scripts\Activate.ps1` in PowerShell.
 
-### 2. Connect Blender
+### 2. Start a Blender endpoint
 
 Choose one option:
 
-- **Bundled addon:** install `addon.py` through `Preferences → Add-ons → Install from Disk…`, enable **Blender MCP (Local)**, and click **Start MCP Server** in the `N → MCP` panel.
+- **Bundled addon:** build/install `addon.py` or the addon ZIP through `Preferences → Add-ons → Install from Disk…`, enable **Blender MCP (Local)**, and click **Start MCP Server** in the `N → MCP` panel.
 - **Blender Lab integration:** follow the [official instructions](https://www.blender.org/lab/mcp-server/) and start the endpoint at `127.0.0.1:9876`.
 
-Build the addon ZIP with `python tools/build_release.py`. The `dist/` directory is generated and is not included in the source repository.
+The bridge recognizes the official execute-only endpoint automatically. Its default settings are shown in the next step.
 
-### 3. Configure your MCP client
+### 3. Register the bridge with your MCP client
 
-For clients using `mcpServers`:
+Use this canonical definition and translate it into your client's own configuration format:
 
-```json
-{
-  "mcpServers": {
-    "blender-local": {
-      "command": "/absolute/path/to/project/.venv/bin/blender-mcp-local",
-      "args": ["--protocol", "legacy"]
-    }
-  }
-}
-```
+| Setting | Value |
+|---|---|
+| Transport | `stdio` |
+| Command | `/absolute/path/to/project/.venv/bin/blender-mcp-local` |
+| Arguments | none required |
+| Working directory | optional; not needed when the command is absolute |
+| Server name | any; examples use `blender-local` |
 
-Replace the path with the actual executable location. On Windows, use `.venv\Scripts\blender-mcp-local.exe` and escape backslashes in JSON. For other clients, configure an equivalent local stdio server.
+The defaults connect to `127.0.0.1:9876` and use `legacy` bridge-to-Blender framing, which is compatible with both supported endpoints. Add flags only when overriding the host, port, timeout, logging, or framing.
 
-After connecting, call `get_scene_info` and `get_blender_info`. Discover tools with `search_tools` and `get_tool_help`; these also work without a running Blender instance.
+Client configuration syntax is owned by the client. Some use an `mcpServers` JSON object; others use a command array, TOML, or a different key layout. See [Connecting an MCP client](docs/clients.md) for the client directory, copyable examples, Windows path rules, reload behavior, and the common mistakes to avoid.
+
+On Windows, the executable is `.venv\Scripts\blender-mcp-local.exe`; escape backslashes when writing JSON.
+
+### 4. Verify the connection
+
+After the client starts the server, call `get_blender_info` and `get_scene_info`. Discover tools with `search_tools` and `get_tool_help`; discovery also works without a running Blender instance.
+
+## How it works
+
+The Python bridge is the only process that talks to the MCP client. It owns the tool schemas, validates arguments, serializes Blender access, and translates dedicated tool calls into the addon's operation runtime. The Blender endpoint performs the actual scene work on Blender's main thread.
+
+- `addon.py` is optional; the official Blender Lab endpoint can replace it.
+- The MCP transport is always local stdio.
+- The bridge-to-Blender transport is localhost TCP; `--protocol` controls that framing, not the MCP client connection.
+- Scene operations run once. A failed or timed-out transfer never automatically repeats a mutation or render.
 
 ## Security and privacy
 
@@ -78,9 +93,11 @@ The CLI writes a local error journal by default. It does not record raw argument
 
 ## Documentation
 
-- [Detailed guide, tool catalog, and examples](docs/usage.md)
-- [Version history and compatibility](CHANGELOG.md)
+- [Connecting an MCP client](docs/clients.md) — client-neutral setup, per-client entry points, reloading, and path rules
+- [Detailed guide and tool catalog](docs/usage.md) — installation, Blender endpoint, runtime options, workflows, and architecture
+- [Troubleshooting](docs/troubleshooting.md) — missing tools, connection failures, timeouts, stale processes, and logs
 - [Local error journal](logs/README.md)
+- [Version history and compatibility](CHANGELOG.md)
 
 ## Development and testing
 
@@ -96,7 +113,7 @@ addon.py                 Optional Blender addon and local socket server
 src/blender_mcp_local/   MCP bridge, tools, and command runtime
 tests/                   Unit and Blender integration tests
 tools/build_release.py   Addon ZIP and source archive builder
-docs/usage.md            Detailed user documentation
+docs/                    Client setup, usage guide, troubleshooting
 ```
 
 ## License
