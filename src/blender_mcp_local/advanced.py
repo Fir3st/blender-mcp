@@ -707,8 +707,8 @@ def dispatch_advanced(cmd, params):
         if any(tree.nodes.get(name) and name not in removed_names for name in names): raise ValueError("Node name already exists; use set_node_inputs for existing nodes")
         lookup = {node.name: node for node in old_nodes if node.name not in removed_names}
         created = []
-        created_links = []
-        original_links = [(link.from_socket, link.to_socket) for link in tree.links]
+        original_links = [(link.from_socket, link.to_socket, link.is_muted) for link in tree.links]
+        links_changed = False
         try:
             for spec in specs:
                 node = tree.nodes.new(spec["type"])
@@ -725,17 +725,30 @@ def dispatch_advanced(cmd, params):
                 if not output.enabled or not input_.enabled: raise ValueError("Link references a disabled socket")
                 pending_links.append((output, input_))
             for output, input_ in pending_links:
+                links_changed = True
                 link = tree.links.new(output, input_)
-                created_links.append(link)
                 if not link.is_valid: raise ValueError("Incompatible node socket types")
         except Exception:
-            for link in created_links:
-                tree.links.remove(link)
+            # Link limits may already have deleted an earlier new link. Never
+            # dereference those stale RNA handles while rolling back the graph.
+            if links_changed:
+                for link in list(tree.links): tree.links.remove(link)
             for node in created: tree.nodes.remove(node)
-            for output, input_ in original_links:
-                if not any(link.from_socket == output and link.to_socket == input_ for link in tree.links):
-                    tree.links.new(output, input_)
+            if links_changed:
+                for output, input_, muted in original_links:
+                    link = tree.links.new(output, input_)
+                    link.is_muted = muted
             raise
+        # Free every final name before assigning any of them. Blender's default
+        # names can otherwise collide even within this newly created node set.
+        temporary_index = 0
+        reserved_names = set(names)
+        for node in created:
+            temporary = f"__MCP_PENDING_{temporary_index}"
+            while temporary in reserved_names or tree.nodes.get(temporary) is not None:
+                temporary_index += 1
+                temporary = f"__MCP_PENDING_{temporary_index}"
+            node.name = temporary
         for node in removed: tree.nodes.remove(node)
         for spec, node in zip(specs, created): node.name = spec["name"]
         return tree_summary(tree)

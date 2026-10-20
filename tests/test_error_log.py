@@ -175,6 +175,25 @@ class ErrorLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("DO_NOT_LOG_VALUE", text)
         self.assertTrue(self.journal.read()["events"][0]["frames"])
 
+    async def test_node_connection_and_mesh_errors_have_safe_specific_summaries(self):
+        cases = [
+            ("Connection refused: DO_NOT_LOG_VALUE", "The Blender endpoint refused the connection; start its MCP server and verify the host/port."),
+            ("Node type DO_NOT_LOG_VALUE undefined", "The node type is unavailable or unsupported by this Blender version or node-tree type."),
+            ("Node owner not found: DO_NOT_LOG_VALUE", "The material/world owning the requested node tree was not found."),
+            ("Node tree not found; DO_NOT_LOG_VALUE", "The requested node tree is absent or disabled; create or enable it first."),
+            ("Node name already exists; DO_NOT_LOG_VALUE", "A requested node name already exists; use set_node_inputs or explicitly replace it."),
+            ("A node to remove was not found: DO_NOT_LOG_VALUE", "A node selected for removal was not found; inspect the actual node names."),
+            ("Link references a missing or removed node: DO_NOT_LOG_VALUE", "A node link references a missing or removed node."),
+            ("Incompatible node socket types: DO_NOT_LOG_VALUE", "The requested node link connects incompatible socket types."),
+            ("Not an RNA pointer property: DO_NOT_LOG_VALUE", "A nested RNA path traverses a non-pointer or unknown property."),
+            ("Object 'DO_NOT_LOG_VALUE' is not a mesh", "Mesh inspection/editing was requested for a non-mesh object."),
+        ]
+        for message, expected in cases:
+            with self.subTest(message=message):
+                event_id = self.journal.record(tool="edit_node_tree", error=RuntimeError(message), version=server.__version__)
+                self.assertEqual(self.journal.read(event_id=event_id)["events"][0]["summary"], expected)
+        self.assertNotIn("DO_NOT_LOG_VALUE", self.path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

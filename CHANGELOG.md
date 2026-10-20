@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Preserve requested node names when they collide with Blender's temporary/default names during graph creation or replacement.
+- Restore original graph links after a failed edit, even when Blender's input-link limits already deleted an earlier newly created link. Preserve link mute state and remove all newly created nodes without dereferencing deleted RNA handles.
+- Add safe diagnostic summaries for unavailable node types, missing node owners/trees/names, invalid links, nested RNA paths, non-mesh audit inputs and refused Blender connections. Raw argument values and exception details remain excluded.
+
 ## 1.0.8 — 2026-10-20
 
 - Compress large execute-backend mesh/batch arguments and upload them in 16 KiB chunks before dispatch, avoiding oversized single execute requests.

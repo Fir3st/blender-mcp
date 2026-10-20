@@ -309,6 +309,8 @@ class BlenderIntegrationTests(unittest.TestCase):
         name = self.cmd("create_object", name="MatrixInspection", type="cube", location=[1, 2, 3])["name"]
         paths = ["matrix_world", "matrix_local", "matrix_basis", "location", "rotation_euler"]
         before = self.cmd("get_properties", target="OBJECT", name=name, paths=paths)
+        all_properties = self.cmd("get_properties", target="OBJECT", name=name)["properties"]
+        self.assertEqual({path: all_properties[path] for path in paths}, before["properties"])
         matrix = before["properties"]["matrix_world"]["value"]
         self.assertEqual(len(matrix), 4)
         self.assertTrue(all(len(row) == 4 and all(isinstance(v, (int, float)) for v in row) for row in matrix))
@@ -429,6 +431,40 @@ class BlenderIntegrationTests(unittest.TestCase):
             ], links=[{"from_node": "Color", "from_socket": 0, "to_node": "Output", "to_socket": "Image"}])
             self.assertEqual(len(graph["links"]), 1)
             self.cmd("set_properties", target="SCENE", properties={"use_nodes": False})
+
+    def test_node_names_do_not_collide_with_temporary_blender_names(self):
+        material = self.cmd("create_material", name="NodeNameCollisions")["material"]
+        nodes = [
+            {"name": "Math.001", "type": "ShaderNodeMath", "properties": {"operation": "ADD"}},
+            {"name": "Math", "type": "ShaderNodeMath", "properties": {"operation": "MULTIPLY"}},
+            {"name": "__MCP_PENDING_0", "type": "ShaderNodeValue"},
+        ]
+        for revision in range(2):
+            with self.subTest(revision=revision):
+                graph = self.cmd("edit_node_tree", target="MATERIAL", name=material, clear=True, nodes=nodes,
+                    links=[{"from_node": "Math.001", "from_socket": 0, "to_node": "Math", "to_socket": 0}])
+                self.assertEqual({node["name"] for node in graph["nodes"]}, {"Math", "Math.001", "__MCP_PENDING_0"})
+                self.assertEqual(graph["links"][0]["from_node"], "Math.001")
+                self.assertEqual(graph["links"][0]["to_node"], "Math")
+        self.cmd("set_node_inputs", target="MATERIAL", name=material, node_name="Math.001", inputs={"0": 2})
+
+    def test_failed_node_rewiring_restores_graph_after_replacing_same_input_twice(self):
+        material = self.cmd("create_material", name="NodeLinkRollback")["material"]
+        before = self.cmd("edit_node_tree", target="MATERIAL", name=material, clear=True, nodes=[
+            {"name": "Original", "type": "ShaderNodeValue"},
+            {"name": "Destination", "type": "ShaderNodeMath"},
+        ], links=[{"from_node": "Original", "from_socket": 0, "to_node": "Destination", "to_socket": 0}])
+        with self.assertRaisesRegex(RuntimeError, "Incompatible node socket types"):
+            self.cmd("edit_node_tree", target="MATERIAL", name=material, nodes=[
+                {"name": "One", "type": "ShaderNodeValue"},
+                {"name": "Two", "type": "ShaderNodeValue"},
+                {"name": "Shader", "type": "ShaderNodeBsdfDiffuse"},
+            ], links=[
+                {"from_node": "One", "from_socket": 0, "to_node": "Destination", "to_socket": 0},
+                {"from_node": "Two", "from_socket": 0, "to_node": "Destination", "to_socket": 0},
+                {"from_node": "Shader", "from_socket": 0, "to_node": "Destination", "to_socket": 1},
+            ])
+        self.assertEqual(self.cmd("get_node_tree", target="MATERIAL", name=material), before)
 
     def test_rig_weights_pose_shape_keys_and_animation_slots(self):
         mesh = self.cmd("create_mesh", name="RigMesh", vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]], faces=[[0, 1, 2]])["name"]
