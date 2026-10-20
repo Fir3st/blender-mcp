@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.10 — 2026-10-20
+
+- Exit a stdio bridge whose MCP client has ended but still holds stdin/stdout open. A standard MCP ping after 60 seconds of inactivity distinguishes an idle live client from an abandoned session; two unanswered probes terminate the process.
+- Add `--session-timeout` / `BLENDER_SESSION_TIMEOUT` (default 60 seconds; 0 disables). Live clients answer pings and remain open indefinitely.
+- Close the Blender socket before exiting so blocked transport work cannot delay process shutdown.
+- Add subprocess regressions for silent-client termination, pinging-client survival, stdin EOF and process cleanup.
+
 ## 1.0.9 — 2026-10-20
 
 - Preserve requested node names when they collide with Blender's temporary/default names during graph creation or replacement.

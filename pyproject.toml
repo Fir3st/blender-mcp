@@ -1,6 +1,6 @@
 [project]
 name = "blender-mcp-local"
-version = "1.0.9"
+version = "1.0.10"
 description = "Local-only MCP bridge for Blender (no external services, no telemetry)."
 license = {file = "LICENSE"}
 classifiers = ["License :: OSI Approved :: Apache Software License"]

@@ -13,7 +13,7 @@ FILES = [
     "addon.py", "pyproject.toml", "uv.lock", "README.md", "CHANGELOG.md", "docs/usage.md", "LICENSE", "NOTICE",
     "src/blender_mcp_local/__init__.py", "src/blender_mcp_local/server.py", "src/blender_mcp_local/advanced.py",
     "src/blender_mcp_local/production.py",
-    "src/blender_mcp_local/error_log.py", "tests/test_error_log.py", "logs/README.md",
+    "src/blender_mcp_local/error_log.py", "tests/test_error_log.py", "tests/test_lifecycle.py", "logs/README.md",
     "tests/test_server.py", "tests/test_addon_transport.py", "tests/blender_host.py", "tests/run_blender_integration.py",
     "tools/build_release.py",
 ]

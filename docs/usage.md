@@ -1,4 +1,4 @@
-# Blender MCP Local — detailed guide (1.0.9)
+# Blender MCP Local — detailed guide (1.0.10)
 
 A local, **tool-first MCP for Blender**: 118 tools for modeling, materials, Geometry Nodes, rigging, animation, collisions, physics, lighting, rendering, file operations, and local error diagnostics. Clients primarily compose specific operations; custom Python is a justified fallback for capabilities not covered by tools.
 
@@ -25,7 +25,7 @@ With this transport, the client still calls dedicated tools such as `create_obje
 In Blender, open `Preferences → Add-ons → Install from Disk…` and select:
 
 ```text
-dist/blender-mcp-local-addon-1.0.9.zip
+dist/blender-mcp-local-addon-1.0.10.zip
 ```
 
 Generate this archive first with `python tools/build_release.py` if it is not available. Enable **Blender MCP (Local)**. In the 3D viewport, open the sidebar (`N`), select the **MCP** tab, and click **Start MCP Server**. The default address is `127.0.0.1:9876`.
@@ -46,7 +46,7 @@ blender-mcp-local --version
 Alternatively, install a previously built source package:
 
 ```bash
-pip install dist/blender_mcp_local-1.0.9.tar.gz
+pip install dist/blender_mcp_local-1.0.10.tar.gz
 ```
 
 ### 3. Connect an MCP client
@@ -72,17 +72,20 @@ Optional bridge arguments:
 --host 127.0.0.1
 --port 9876
 --timeout 180
+--session-timeout 60
 --protocol legacy|length
 --version
 --error-log /absolute/path/errors.jsonl
 --no-error-log
 ```
 
-The configuration variables `BLENDER_HOST`, `BLENDER_PORT`, `BLENDER_TIMEOUT`, and `BLENDER_PROTOCOL` remain supported. CLI arguments take precedence. For long renders, set appropriate timeouts in both the bridge and the MCP client.
+The configuration variables `BLENDER_HOST`, `BLENDER_PORT`, `BLENDER_TIMEOUT`, `BLENDER_PROTOCOL` and `BLENDER_SESSION_TIMEOUT` remain supported. CLI arguments take precedence. For long renders, set appropriate timeouts in both the bridge and the MCP client.
+
+When stdio is idle, the bridge sends a standard MCP liveness ping. A live client answers, so the session can stay idle indefinitely; a client that has ended but still holds the pipes open does not answer and the bridge exits after two probes. `--session-timeout 0` disables probing. Closing stdin or losing the client process also ends the bridge. This prevents stale old versions from remaining after an update. If processes from a pre-1.0.10 version are already stuck, stop them once with `pkill -f blender-mcp-local`.
 
 ### Upgrading from 0.4.0
 
-1. If you use the bundled 0.4.0 addon, stop its server and replace it with version 1.0.9.
+1. If you use the bundled 0.4.0 addon, stop its server and replace it with version 1.0.10.
 2. Update the Python bridge and restart its process.
 3. Refresh the MCP connection so the client loads the new instructions and schemas.
 

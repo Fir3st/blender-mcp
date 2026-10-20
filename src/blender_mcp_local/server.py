@@ -11,8 +11,10 @@ import json
 import os
 import socket
 import struct
+import sys
 import threading
 import textwrap
+import time
 import zlib
 import uuid
 from contextlib import asynccontextmanager
@@ -20,7 +22,9 @@ from contextvars import ContextVar
 from functools import wraps
 from typing import Any, Literal
 
+import anyio
 from mcp.server.fastmcp import Context, FastMCP, Image
+from mcp.server.lowlevel import server as lowlevel_server
 from mcp.server.fastmcp.tools import Tool
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,16 +39,99 @@ HOST = os.environ.get("BLENDER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BLENDER_PORT", "9876"))
 TIMEOUT = float(os.environ.get("BLENDER_TIMEOUT", "180"))
 PROTOCOL = os.environ.get("BLENDER_PROTOCOL", "legacy").lower()
+SESSION_TIMEOUT = float(os.environ.get("BLENDER_SESSION_TIMEOUT", "60"))
+SESSION_PROBE_TIMEOUT = float(os.environ.get("BLENDER_SESSION_PROBE_TIMEOUT", "30"))
+SESSION_PROBE_RETRY = float(os.environ.get("BLENDER_SESSION_PROBE_RETRY", "5"))
 EXECUTE_CHUNK_BYTES = 16 * 1024
 MAX_RESULT_BYTES = 64 * 1024 * 1024
 _error_context: ContextVar[dict[str, Any] | None] = ContextVar("error_context", default=None)
 _error_journal = ErrorJournal()
+_active_session = None
+_session_started = time.monotonic()
+
+
+class _TrackedServerSession(lowlevel_server.ServerSession):
+    """Expose the stdio session so the bridge can probe a silent client.
+
+    Some clients keep the stdio pipes open after a session ends. In that case
+    EOF never arrives; a standard MCP ping distinguishes an idle client from an
+    abandoned one without guessing from tool inactivity.
+    """
+
+    async def __aenter__(self):
+        global _active_session, _session_started
+        session = await super().__aenter__()
+        _active_session, _session_started = self, time.monotonic()
+        return session
+
+    async def __aexit__(self, *exc_info):
+        global _active_session
+        if _active_session is self:
+            _active_session = None
+        return await super().__aexit__(*exc_info)
 
 
 class BlenderMCP(FastMCP):
     """Keep socket work off the MCP event loop and expose useful tool hints."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.session_idle_timeout = SESSION_TIMEOUT
+        self._last_client_activity = time.monotonic()
+        self._active_calls = 0
+
+    async def run_stdio_async(self) -> None:
+        from mcp.server.stdio import stdio_server
+
+        previous_session_class = lowlevel_server.ServerSession
+        lowlevel_server.ServerSession = _TrackedServerSession
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                async with anyio.create_task_group() as tasks:
+                    tasks.start_soon(self._monitor_client)
+                    try:
+                        await self._mcp_server.run(
+                            read_stream, write_stream, self._mcp_server.create_initialization_options()
+                        )
+                    finally:
+                        tasks.cancel_scope.cancel()
+        finally:
+            lowlevel_server.ServerSession = previous_session_class
+
+    async def _probe_client(self, session) -> bool:
+        # A compliant MCP client answers a ping even when it is otherwise idle.
+        try:
+            with anyio.fail_after(SESSION_PROBE_TIMEOUT):
+                await session.send_ping()
+            return True
+        except Exception:
+            return False
+
+    async def _monitor_client(self) -> None:
+        timeout = self.session_idle_timeout
+        if timeout <= 0:
+            return
+        while True:
+            await anyio.sleep(min(5.0, timeout))
+            session = _active_session
+            if session is None or not getattr(session, "_initialized", False):
+                if time.monotonic() - _session_started > timeout * 2 + SESSION_PROBE_TIMEOUT:
+                    _stop_abandoned_bridge("MCP client never initialized")
+                continue
+            if self._active_calls:
+                continue
+            if time.monotonic() - self._last_client_activity < timeout:
+                continue
+            if await self._probe_client(session):
+                self._last_client_activity = time.monotonic()
+                continue
+            await anyio.sleep(SESSION_PROBE_RETRY)
+            if not await self._probe_client(session):
+                _stop_abandoned_bridge("MCP client stopped responding")
+
     async def call_tool(self, name, arguments):
+        self._active_calls += 1
+        self._last_client_activity = time.monotonic()
         tool = self._tool_manager.get_tool(name)
         context = {"logged": False, "cancelled": False, "execution_state": "not_started", "tool": name if tool else "unknown_tool",
                    "argument_keys": list(tool.parameters.get("properties", {})) if tool else []}
@@ -64,6 +151,8 @@ class BlenderMCP(FastMCP):
                 _record_error(context["tool"], error, arguments, phase="tool")
             raise
         finally:
+            self._active_calls -= 1
+            self._last_client_activity = time.monotonic()
             _error_context.reset(marker)
 
     def add_tool(self, fn, *args, **kwargs):
@@ -562,6 +651,18 @@ def _dispatch_to_blender(callback):
         if context is not None:
             context["execution_state"] = "response_received"
         return result
+
+
+def _stop_abandoned_bridge(reason: str) -> None:
+    """Exit a stdio server whose client is gone but still holds the pipes open."""
+    connection = _conn
+    if connection is not None:
+        try:
+            connection.disconnect()
+        except Exception:
+            pass
+    print(f"[blender-mcp-local] {reason}; exiting", file=sys.stderr, flush=True)
+    os._exit(0)
 
 
 def _record_error(tool_name, error, arguments=None, *, phase="tool", batch_index=None):
@@ -2978,6 +3079,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default=HOST)
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--timeout", type=float, default=TIMEOUT)
+    parser.add_argument("--session-timeout", type=float, default=SESSION_TIMEOUT,
+                        help="Seconds without client activity before an MCP liveness ping; 0 disables")
     parser.add_argument("--protocol", choices=["legacy", "length"], default=PROTOCOL)
     logging_options = parser.add_mutually_exclusive_group()
     logging_options.add_argument("--error-log", help="Local sanitized JSONL error journal (default: project logs or user state directory)")
@@ -2985,7 +3088,10 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535 or not 0 < args.timeout < float("inf"):
         parser.error("port must be 1-65535 and timeout must be positive and finite")
+    if not 0 <= args.session_timeout < float("inf"):
+        parser.error("session timeout must be nonnegative and finite")
     HOST, PORT, TIMEOUT, PROTOCOL = args.host, args.port, args.timeout, args.protocol
+    mcp.session_idle_timeout = args.session_timeout
     try:
         _error_journal = ErrorJournal(None if args.no_error_log else args.error_log or default_log_path())
     except ValueError as error:
