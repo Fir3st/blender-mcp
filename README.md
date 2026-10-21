@@ -89,7 +89,7 @@ The Python bridge is the only process that talks to the MCP client. It owns the 
 
 Save your scene or a checkpoint before destructive operations. Cancelling an already dispatched request does not guarantee that the Blender operation stops.
 
-The CLI writes a local error journal by default. It does not record raw argument values or custom code, but may include paths from stack frames. Review logs before sharing them. Disable logging with `--no-error-log`; see the [error journal documentation](logs/README.md).
+The CLI records failures in a local error journal by default. This is not a general runtime log; it is created on the first recorded failure and does not capture stdout/stderr from the client process. It does not record raw argument values or custom code, but may include paths from stack frames. Review logs before sharing them. Disable logging with `--no-error-log`; see the [error journal documentation](logs/README.md).
 
 ## Documentation
 

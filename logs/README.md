@@ -1,8 +1,13 @@
 # Local MCP error journal
 
-The bridge logs failures by default to `logs/errors.jsonl` in this editable
+This is the bridge's **error journal**, not a general stdout/stderr log. MCP
+stdout is the JSON-RPC protocol channel; stderr goes to the client process that
+launched the bridge. A clean session may not create a journal file at all.
+
+The bridge records failures by default to `logs/errors.jsonl` in this editable
 project. Installed packages use `~/.local/state/blender-mcp-local/errors.jsonl`.
-Use `--error-log /absolute/path/errors.jsonl` to choose a location or
+The file is created on the first recorded failure. Use
+`--error-log /absolute/path/errors.jsonl` to choose a location or
 `--no-error-log` to disable it. Restart the MCP process after changing flags.
 
 ## Reading the journal

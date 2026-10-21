@@ -6,6 +6,7 @@
 - Add a client setup guide with per-client entry points for Pi, Claude, Codex, VS Code, Cursor, Windsurf, and OpenCode, plus a generic configuration path.
 - Add a troubleshooting guide for missing tools, connection failures, timeouts, stale processes, Windows paths, and safe log inspection.
 - Remove client-specific assumptions from the error-journal documentation and the main quick start.
+- Clarify that the bridge's error journal is failure-only and separate from the client's stdout/stderr process log.
 - Include the new guides in the source release archive.
 
 ## 1.0.10 — 2026-10-20

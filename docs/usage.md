@@ -164,14 +164,21 @@ pkill -f blender-mcp-local
 
 Do not use that command while an active session is using the bridge.
 
-### Error journal
+### Logging model and error journal
 
-When launched through the CLI, the bridge writes a private local error journal:
+The bridge has two distinct diagnostic channels:
+
+- **MCP stdio is the protocol channel.** stdout carries JSON-RPC and must not be treated as a log file.
+- **stderr goes to the process that launched the bridge.** If a client starts the bridge as its child, connection, startup, and crash messages appear in that client's process log. The bridge does not redirect stdout or stderr into its own general log file.
+
+On top of that, the CLI records failures in a private sanitized **error journal**:
 
 - Editable checkout: `logs/errors.jsonl`
 - Installed package: `~/.local/state/blender-mcp-local/errors.jsonl`
 
-Use `get_error_log(limit=20)` to read recent events and `get_error_log_status()` to inspect configuration. The journal records a timestamp/ID, version, tool, error class, fixed diagnostic summary, frame locations, argument types/counts, and an optional batch index. It deliberately excludes raw argument values, custom code, stdout, local variables, and arbitrary exception text.
+The journal is created on the first recorded failure. A clean session may therefore have no journal file at all; use `get_error_log_status()` to see the configured path and whether logging is enabled. It is not a full runtime log and does not capture every connection attempt or crash.
+
+Use `get_error_log(limit=20)` to read recent events. The journal records a timestamp/ID, version, tool, error class, fixed diagnostic summary, frame locations, argument types/counts, and an optional batch index. It deliberately excludes raw argument values, custom code, stdout, local variables, and arbitrary exception text.
 
 Files rotate at 5 MiB with two backups and are created with private permissions (0600). Logging failures do not replace the original error. Use `--error-log /absolute/path/errors.jsonl` or `--no-error-log` to change behavior. See [logs/README.md](../logs/README.md) for the full contract.
 

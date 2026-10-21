@@ -100,10 +100,20 @@ After updating, restart the client and the bridge. If your client does not imple
 
 ## Error journal and diagnostics
 
-The journal is enabled by default when the bridge is launched through the CLI:
+The error journal is not the same thing as the client's process log. MCP stdout
+is the JSON-RPC protocol channel, and stderr is inherited by the process that
+launched the bridge. If a client launches `blender-mcp-local`, its stdout/stderr
+and crash messages normally appear in that client's log, not in the journal.
+
+The bridge's own persistent artifact is the sanitized error journal, enabled by
+default when launched through the CLI:
 
 - Editable checkout: `logs/errors.jsonl`
 - Installed package: `~/.local/state/blender-mcp-local/errors.jsonl`
+
+The file is created on the first recorded failure; a session with no failures may
+not have a journal file. Use `get_error_log_status()` to verify the path and
+whether logging is enabled.
 
 Use:
 
