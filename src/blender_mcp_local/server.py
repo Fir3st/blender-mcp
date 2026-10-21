@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from blender_mcp_local import __version__
 from blender_mcp_local.advanced import COMMAND_CODE, register_tools
 from blender_mcp_local.production import COMMAND_CODE as PRODUCTION_CODE, register_tools as register_production_tools
+from blender_mcp_local.bridge_log import BridgeLog, default_bridge_log_path
 from blender_mcp_local.error_log import ErrorJournal, default_log_path
 
 
@@ -42,12 +43,31 @@ PROTOCOL = os.environ.get("BLENDER_PROTOCOL", "legacy").lower()
 SESSION_TIMEOUT = float(os.environ.get("BLENDER_SESSION_TIMEOUT", "60"))
 SESSION_PROBE_TIMEOUT = float(os.environ.get("BLENDER_SESSION_PROBE_TIMEOUT", "30"))
 SESSION_PROBE_RETRY = float(os.environ.get("BLENDER_SESSION_PROBE_RETRY", "5"))
+LOG_FILE = os.environ.get("BLENDER_LOG_FILE") or None
 EXECUTE_CHUNK_BYTES = 16 * 1024
 MAX_RESULT_BYTES = 64 * 1024 * 1024
 _error_context: ContextVar[dict[str, Any] | None] = ContextVar("error_context", default=None)
 _error_journal = ErrorJournal()
+_bridge_log = BridgeLog()
 _active_session = None
 _session_started = time.monotonic()
+
+
+def _safe_error_text(error: BaseException, *, include_message: bool = True) -> str | None:
+    """Keep a bounded one-line message for the private operational log."""
+    if not include_message:
+        return None
+    text = " ".join(str(error).split())
+    return text[:500] + ("..." if len(text) > 500 else "")
+
+
+def _log_unhandled(exc_type, error, traceback) -> None:
+    _bridge_log.error(
+        "unhandled_exception",
+        error_type=getattr(exc_type, "__name__", "Error"),
+        error=_safe_error_text(error),
+    )
+    sys.__excepthook__(exc_type, error, traceback)
 
 
 class _TrackedServerSession(lowlevel_server.ServerSession):
@@ -130,27 +150,55 @@ class BlenderMCP(FastMCP):
                 _stop_abandoned_bridge("MCP client stopped responding")
 
     async def call_tool(self, name, arguments):
+        started = time.monotonic()
         self._active_calls += 1
         self._last_client_activity = time.monotonic()
         tool = self._tool_manager.get_tool(name)
         context = {"logged": False, "cancelled": False, "execution_state": "not_started", "tool": name if tool else "unknown_tool",
                    "argument_keys": list(tool.parameters.get("properties", {})) if tool else []}
         marker = _error_context.set(context)
+        _bridge_log.info("tool_started", tool=context["tool"])
+        status, failure = "ok", None
         try:
             result = await super().call_tool(name, arguments)
-            if isinstance(result, CallToolResult) and result.isError and not context["logged"]:
-                _record_error(context["tool"], RuntimeError("Tool returned an error result"), arguments, phase="returned_error")
+            if isinstance(result, CallToolResult) and result.isError:
+                status = "error_result"
+                if not context["logged"]:
+                    _record_error(context["tool"], RuntimeError("Tool returned an error result"), arguments, phase="returned_error")
             return result
         except asyncio.CancelledError as error:
+            status, failure = "cancelled", error
             context["cancelled"] = True
             if not context["logged"]:
                 _record_error(context["tool"], error, arguments, phase="cancelled")
             raise
         except Exception as error:
+            status, failure = "error", error
             if not context["logged"]:
                 _record_error(context["tool"], error, arguments, phase="tool")
             raise
         finally:
+            fields = {
+                "tool": context["tool"],
+                "status": status,
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                "execution_state": context["execution_state"],
+            }
+            if context.get("error_id"):
+                fields["error_id"] = context["error_id"]
+            if failure is not None:
+                fields["error_type"] = type(failure).__name__
+                fields["error"] = _safe_error_text(
+                    failure, include_message=context["tool"] != "execute_blender_code"
+                )
+            elif status == "error_result":
+                fields["error_type"] = "tool_result"
+            if status in {"error", "error_result"}:
+                _bridge_log.error("tool_finished", **fields)
+            elif status == "cancelled":
+                _bridge_log.warning("tool_finished", **fields)
+            else:
+                _bridge_log.info("tool_finished", **fields)
             self._active_calls -= 1
             self._last_client_activity = time.monotonic()
             _error_context.reset(marker)
@@ -187,10 +235,21 @@ class BlenderConnection:
         self.backend = "native"
 
     def connect(self) -> None:
+        _bridge_log.info("blender_connect", host=self.host, port=self.port, protocol=self.protocol)
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(TIMEOUT)
-        s.connect((self.host, self.port))
+        try:
+            s.settimeout(TIMEOUT)
+            s.connect((self.host, self.port))
+        except OSError as error:
+            _bridge_log.error(
+                "blender_connect_failed", host=self.host, port=self.port,
+                protocol=self.protocol, error_type=type(error).__name__,
+                error=_safe_error_text(error),
+            )
+            s.close()
+            raise
         self.sock = s
+        _bridge_log.info("blender_connected", host=self.host, port=self.port, protocol=self.protocol)
 
     def disconnect(self) -> None:
         if self.sock is not None:
@@ -248,6 +307,11 @@ class BlenderConnection:
             sock.sendall(payload)
             response = self._recv_response()
         except (OSError, ConnectionError) as e:
+            _bridge_log.warning(
+                "blender_request_failed", host=self.host, port=self.port,
+                protocol=self.protocol, error_type=type(e).__name__,
+                error=_safe_error_text(e),
+            )
             self.disconnect()
             raise RuntimeError(f"Blender connection error: {e}") from e
         finally:
@@ -295,6 +359,7 @@ class BlenderConnection:
                 "source": source, "library_id": library_id,
             }}))
         self.library_ready = True
+        _bridge_log.info("blender_backend", backend=self.backend, protocol=self.protocol)
 
     def _load_execute_library(self) -> None:
         source, library_id = _command_library()
@@ -318,6 +383,7 @@ result = {{'api_version': 1, 'library_id': runtime['_library_id']}}
         if not isinstance(result, dict) or result.get("library_id") != library_id:
             raise RuntimeError("Execute-compatible Blender endpoint did not initialize the command runtime")
         self.library_ready = True
+        _bridge_log.info("blender_backend", backend=self.backend, protocol=self.protocol)
 
     def _execute_library_request(self, type_: str, params: dict[str, Any]) -> Any:
         if type_ not in {"command", "batch"}:
@@ -655,6 +721,7 @@ def _dispatch_to_blender(callback):
 
 def _stop_abandoned_bridge(reason: str) -> None:
     """Exit a stdio server whose client is gone but still holds the pipes open."""
+    _bridge_log.warning("session_abandoned", reason=reason)
     connection = _conn
     if connection is not None:
         try:
@@ -662,6 +729,7 @@ def _stop_abandoned_bridge(reason: str) -> None:
         except Exception:
             pass
     print(f"[blender-mcp-local] {reason}; exiting", file=sys.stderr, flush=True)
+    _bridge_log.close()
     os._exit(0)
 
 
@@ -684,6 +752,8 @@ def _record_error(tool_name, error, arguments=None, *, phase="tool", batch_index
         event_id = None
     if context is not None:
         context["logged"] = True
+        if event_id:
+            context["error_id"] = event_id
     return event_id
 
 
@@ -3073,7 +3143,7 @@ async def batch_tools(operations: list[BlenderToolCall], ctx: Context | None = N
 
 
 def main(argv: list[str] | None = None) -> None:
-    global HOST, PORT, TIMEOUT, PROTOCOL, _error_journal
+    global HOST, PORT, TIMEOUT, PROTOCOL, _error_journal, _bridge_log
     parser = argparse.ArgumentParser(description=f"Tool-first local Blender MCP {__version__} (stdio)")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--host", default=HOST)
@@ -3082,6 +3152,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--session-timeout", type=float, default=SESSION_TIMEOUT,
                         help="Seconds without client activity before an MCP liveness ping; 0 disables")
     parser.add_argument("--protocol", choices=["legacy", "length"], default=PROTOCOL)
+    operational_options = parser.add_mutually_exclusive_group()
+    operational_options.add_argument(
+        "--log-file",
+        help="Operational bridge log (default: project logs or user state directory)",
+    )
+    operational_options.add_argument("--no-log-file", action="store_true", help="Disable the operational bridge log")
     logging_options = parser.add_mutually_exclusive_group()
     logging_options.add_argument("--error-log", help="Local sanitized JSONL error journal (default: project logs or user state directory)")
     logging_options.add_argument("--no-error-log", action="store_true", help="Disable persistent error logging")
@@ -3094,13 +3170,40 @@ def main(argv: list[str] | None = None) -> None:
     mcp.session_idle_timeout = args.session_timeout
     try:
         _error_journal = ErrorJournal(None if args.no_error_log else args.error_log or default_log_path())
+        _bridge_log = BridgeLog(
+            None if args.no_log_file else (args.log_file or LOG_FILE or default_bridge_log_path())
+        )
     except ValueError as error:
         parser.error(str(error))
+    if _bridge_log.last_write_error:
+        print(f"[blender-mcp-local] bridge log unavailable: {_bridge_log.last_write_error}",
+              file=sys.stderr, flush=True)
+    _bridge_log.info(
+        "startup",
+        version=__version__,
+        pid=os.getpid(),
+        parent_pid=os.getppid(),
+        host=HOST,
+        port=PORT,
+        protocol=PROTOCOL,
+        session_timeout=mcp.session_idle_timeout,
+        log_file=_bridge_log.status()["path"],
+        error_log=_error_journal.status()["path"],
+    )
+    sys.excepthook = _log_unhandled
     try:
         mcp.run()
     except Exception as error:
+        _bridge_log.error(
+            "server_crashed",
+            error_type=type(error).__name__,
+            error=_safe_error_text(error),
+        )
         _record_error("server", error, phase="server")
         raise
+    finally:
+        _bridge_log.info("shutdown")
+        _bridge_log.close()
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ class StdioLifecycleTests(unittest.TestCase):
                            BLENDER_SESSION_PROBE_TIMEOUT="0.3", BLENDER_SESSION_PROBE_RETRY="0.2")
         return subprocess.Popen(
             [sys.executable, "-m", "blender_mcp_local.server", "--session-timeout", session_timeout,
-             "--no-error-log"],
+             "--no-error-log", "--no-log-file"],
             cwd=ROOT, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, bufsize=1,
         )

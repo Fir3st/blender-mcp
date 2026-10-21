@@ -77,7 +77,7 @@ Alternatively, build and install a generated source package:
 ```bash
 python tools/build_release.py
 ls dist
-pip install dist/blender_mcp_local-1.0.10.tar.gz   # replace with the generated version
+pip install dist/blender_mcp_local-1.0.11.tar.gz   # replace with the generated version
 ```
 
 `dist/` is generated locally and is not part of the source repository. Build it with `python tools/build_release.py`.
@@ -142,8 +142,10 @@ The bridge is launched by the MCP client, not by a separate daemon. It has no co
 | `--timeout` | `180` | `BLENDER_TIMEOUT` | Socket timeout in seconds |
 | `--session-timeout` | `60` | `BLENDER_SESSION_TIMEOUT` | Idle seconds before an MCP liveness ping; `0` disables probing |
 | `--protocol` | `legacy` | `BLENDER_PROTOCOL` | Bridge-to-Blender framing: `legacy` or `length` |
-| `--error-log` | automatic | — | Write the sanitized JSONL journal to a specific path |
-| `--no-error-log` | off | — | Disable the persistent journal |
+| `--log-file` | automatic | `BLENDER_LOG_FILE` | Write the operational bridge log to a specific `.log` path |
+| `--no-log-file` | off | — | Disable the operational bridge log |
+| `--error-log` | automatic | — | Write the sanitized JSONL error journal to a specific path |
+| `--no-error-log` | off | — | Disable the persistent error journal |
 | `--version` | — | — | Print the bridge version and exit |
 
 CLI arguments take precedence over environment variables. For long renders, increase `--timeout` and the client's own tool timeout; they are separate limits.
@@ -164,23 +166,27 @@ pkill -f blender-mcp-local
 
 Do not use that command while an active session is using the bridge.
 
-### Logging model and error journal
+### Logging model, bridge log, and error journal
 
-The bridge has two distinct diagnostic channels:
+The bridge has several distinct diagnostic channels:
 
 - **MCP stdio is the protocol channel.** stdout carries JSON-RPC and must not be treated as a log file.
-- **stderr goes to the process that launched the bridge.** If a client starts the bridge as its child, connection, startup, and crash messages appear in that client's process log. The bridge does not redirect stdout or stderr into its own general log file.
+- **stderr goes to the process that launched the bridge.** If a client starts the bridge as its child, its own process log may capture stderr, startup warnings, and a crash traceback.
+- **`bridge.log` is the bridge's operational log.** It is created at startup and records startup metadata, Blender connection attempts/results, tool starts and finishes with durations and status, failures, abandoned sessions, and shutdown.
+- **`errors.jsonl` is the sanitized error journal.** It records failures only and is created on the first recorded failure.
 
-On top of that, the CLI records failures in a private sanitized **error journal**:
+Default locations:
 
-- Editable checkout: `logs/errors.jsonl`
-- Installed package: `~/.local/state/blender-mcp-local/errors.jsonl`
+| File | Editable checkout | Installed package |
+|---|---|---|
+| Operational log | `logs/bridge.log` | `~/.local/state/blender-mcp-local/bridge.log` |
+| Error journal | `logs/errors.jsonl` | `~/.local/state/blender-mcp-local/errors.jsonl` |
 
-The journal is created on the first recorded failure. A clean session may therefore have no journal file at all; use `get_error_log_status()` to see the configured path and whether logging is enabled. It is not a full runtime log and does not capture every connection attempt or crash.
+Both files rotate at 5 MiB with two backups and are created with private permissions (0600). Logging failures do not replace the operation's result or prevent the bridge from starting.
 
-Use `get_error_log(limit=20)` to read recent events. The journal records a timestamp/ID, version, tool, error class, fixed diagnostic summary, frame locations, argument types/counts, and an optional batch index. It deliberately excludes raw argument values, custom code, stdout, local variables, and arbitrary exception text.
+`bridge.log` never records raw tool arguments, custom Python code, or MCP stdio payloads. It does record tool names, durations, status, error classes, bounded error text, and local connection metadata. The error journal deliberately excludes arbitrary exception text and raw values; use it for a smaller, sanitized failure record.
 
-Files rotate at 5 MiB with two backups and are created with private permissions (0600). Logging failures do not replace the original error. Use `--error-log /absolute/path/errors.jsonl` or `--no-error-log` to change behavior. See [logs/README.md](../logs/README.md) for the full contract.
+Use `get_error_log(limit=20)` and `get_error_log_status()` for the error journal. The operational log is a regular text file; read it with any local tool that has filesystem access. Use `--log-file /absolute/path/bridge.log` or `--no-log-file` to change the operational log, and `--error-log` or `--no-error-log` for the journal. See [logs/README.md](../logs/README.md) for the full contract.
 
 ### Why `--protocol` is not an MCP client setting
 

@@ -229,7 +229,7 @@ A client may cache the tool list for the lifetime of a session. If you update th
 - **Treating `args` as mandatory.** An empty list is fine; omitting it may also be fine depending on the client.
 - **Using comments in strict JSON.** Some clients accept JSONC, others reject comments. Match your client's format.
 - **Forgetting project trust.** Pi and some other clients do not load project-level MCP configuration until the project is trusted.
-- **Confusing the client's process log with the bridge error journal.** MCP stdout is protocol, stderr goes to the launching client, and the sanitized journal is a separate failure-only file. A clean run may have no journal file.
+- **Confusing the client's process log with the bridge logs.** MCP stdout is protocol, stderr goes to the launching client, `bridge.log` is the bridge's operational log, and the sanitized `errors.jsonl` journal is failure-only. A clean run may have no error journal.
 - **Expecting a config edit to affect a running session.** Most clients read server configuration at startup or reconnect.
 
 If the server does not appear at all, see [Troubleshooting](troubleshooting.md#the-client-does-not-list-the-server-or-its-tools).

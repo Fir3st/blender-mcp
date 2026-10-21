@@ -98,24 +98,31 @@ On Windows, use Task Manager or your client's process list to end the old bridge
 
 After updating, restart the client and the bridge. If your client does not implement server-initiated MCP pings, start the bridge with `--session-timeout 0`; in that mode you are responsible for closing old processes when the client exits.
 
-## Error journal and diagnostics
+## Bridge log, error journal, and diagnostics
 
-The error journal is not the same thing as the client's process log. MCP stdout
-is the JSON-RPC protocol channel, and stderr is inherited by the process that
-launched the bridge. If a client launches `blender-mcp-local`, its stdout/stderr
-and crash messages normally appear in that client's log, not in the journal.
+Do not confuse three different channels:
 
-The bridge's own persistent artifact is the sanitized error journal, enabled by
-default when launched through the CLI:
+1. **Client process log:** stdout is the MCP JSON-RPC channel and stderr is
+   inherited by the process that launched the bridge. A client may capture that
+   stderr in its own log.
+2. **`bridge.log`:** the bridge's operational log. It is created at startup and
+   records startup metadata, Blender connection attempts/results, tool starts and
+   finishes, durations, failures, abandoned sessions, and shutdown.
+3. **`errors.jsonl`:** the sanitized, failure-only error journal. It is created
+   on the first recorded failure.
 
-- Editable checkout: `logs/errors.jsonl`
-- Installed package: `~/.local/state/blender-mcp-local/errors.jsonl`
+Default locations:
 
-The file is created on the first recorded failure; a session with no failures may
-not have a journal file. Use `get_error_log_status()` to verify the path and
-whether logging is enabled.
+| File | Editable checkout | Installed package |
+|---|---|---|
+| Operational log | `logs/bridge.log` | `~/.local/state/blender-mcp-local/bridge.log` |
+| Error journal | `logs/errors.jsonl` | `~/.local/state/blender-mcp-local/errors.jsonl` |
 
-Use:
+The operational log does not contain raw tool arguments, custom Python code, or
+MCP stdio payloads, but it may contain bounded error text and local paths. Read it
+directly with any editor or command-line tool that has filesystem access.
+
+Use these tools for the error journal:
 
 ```text
 get_error_log(limit=20)
@@ -124,9 +131,9 @@ get_error_log_status()
 
 The journal contains safe summaries, error classes, argument shapes, and source-frame locations. It does not contain raw arguments, custom code, stdout, or arbitrary exception text. It may contain local paths, so review a record before sharing it.
 
-A journal entry is not proof that a failed operation was rolled back. Inspect the scene before retrying. For the full record contract, see [logs/README.md](../logs/README.md).
+A journal entry is not proof that a failed operation was rolled back. Inspect the scene before retrying. For the full logging contract, see [logs/README.md](../logs/README.md).
 
-If the tools themselves are unavailable, read the JSONL file directly with any local editor or command-line tool that has filesystem access. Client-side file access differs; the bridge does not require a specific client integration.
+If the MCP tools themselves are unavailable, read the operational log or the JSONL journal directly. Client-side file access differs; the bridge does not require a specific client integration.
 
 ## Windows-specific checks
 

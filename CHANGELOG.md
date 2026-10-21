@@ -1,13 +1,19 @@
 # Changelog
 
-## Unreleased
+## 1.0.11 — 2026-10-21
 
+- Add a real operational `bridge.log`, separate from the failure-only sanitized error journal. It records startup metadata, Blender connection attempts/results, backend selection, tool starts and finishes with durations/status, failures, abandoned sessions, shutdown, and server crashes.
+- Add `--log-file` / `--no-log-file` and `BLENDER_LOG_FILE`. The operational log is enabled by default at `logs/bridge.log` in an editable checkout or `~/.local/state/blender-mcp-local/bridge.log` for an installed package.
+- Rotate both the operational log and error journal at 5 MiB with two backups and private 0600 permissions. Logging failures do not prevent startup or replace the operation result.
+- Do not write raw tool arguments, custom Python code, MCP stdio payloads, or full tracebacks to the operational log. Error text is bounded; the error journal remains more restrictive.
+- Add unit and CLI regressions for startup/shutdown, crash logging, tool-call events, raw-value exclusion, rotation, permissions, symlink rejection, and disabling the log.
 - Rewrite the documentation around a client-independent local stdio contract instead of a specific MCP client.
 - Add a client setup guide with per-client entry points for Pi, Claude, Codex, VS Code, Cursor, Windsurf, and OpenCode, plus a generic configuration path.
 - Add a troubleshooting guide for missing tools, connection failures, timeouts, stale processes, Windows paths, and safe log inspection.
 - Remove client-specific assumptions from the error-journal documentation and the main quick start.
 - Clarify that the bridge's error journal is failure-only and separate from the client's stdout/stderr process log.
 - Include the new guides in the source release archive.
+- Native RPC API remains 1. Existing API-1 addons and the official Blender Lab extension remain compatible; restart the bridge to load the new log and documentation.
 
 ## 1.0.10 — 2026-10-20
 

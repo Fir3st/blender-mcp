@@ -127,12 +127,17 @@ class ErrorLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.path.exists())
 
     async def test_cli_enables_logging_by_default_and_can_disable_it(self):
-        with patch.object(server, "default_log_path", return_value=self.path), patch.object(server.mcp, "run"):
+        bridge_path = Path(self.temp.name) / "bridge.log"
+        with patch.object(server, "default_log_path", return_value=self.path), patch.object(
+            server, "default_bridge_log_path", return_value=bridge_path
+        ), patch.object(server.mcp, "run"):
             server.main([])
             self.assertTrue(server._error_journal.status()["enabled"])
             self.assertEqual(server._error_journal.status()["path"], str(self.path))
-            server.main(["--no-error-log"])
+            self.assertTrue(bridge_path.exists())
+            server.main(["--no-error-log", "--no-log-file"])
             self.assertFalse(server._error_journal.status()["enabled"])
+            self.assertFalse(server._bridge_log.status()["enabled"])
 
     async def test_event_filter_and_symlink_guard(self):
         identifier = self.journal.record(tool="append_datablocks", error=ValueError(), version=server.__version__)
