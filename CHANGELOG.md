@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.12 — 2026-11-21
+
+- Report refused Blender connections as `not_started` and include the endpoint and startup guidance in the tool error.
+- Prevent dispatch when the client cancels during connection setup. Once dispatch begins, a cancelled batch or render may still complete in Blender and is not retried automatically.
+- Log unknown batch arguments as `batch_preflight` with the rejected tool and step index, without storing raw argument names or values in the sanitized journal.
+- Clarify missing node-tree names, missing scene worlds and unknown RNA property errors.
+- Native RPC API remains 1. Update and restart the Python bridge to load these fixes; existing API-1 addons remain compatible.
+
 ## 1.0.11 — 2026-10-21
 
 - Add a real operational `bridge.log`, separate from the failure-only sanitized error journal. It records startup metadata, Blender connection attempts/results, backend selection, tool starts and finishes with durations/status, failures, abandoned sessions, shutdown, and server crashes.

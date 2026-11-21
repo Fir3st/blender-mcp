@@ -220,7 +220,7 @@ class BlenderConnectionTests(unittest.TestCase):
         connection.backend, connection.library_ready = "execute", True
         sizes = []
 
-        def request(message):
+        def request(message, *, scene_operation=False):
             namespace = {}
             exec(message["code"], namespace)
             response = {"status": "ok", "result": namespace["result"]}
@@ -256,7 +256,7 @@ class BlenderConnectionTests(unittest.TestCase):
                 connection = BlenderConnection("127.0.0.1", 9876)
                 sizes = []
 
-                def request(message):
+                def request(message, *, scene_operation=False):
                     sizes.append(len(json.dumps(message).encode()))
                     if sizes[-1] > 32768:
                         raise RuntimeError("Test endpoint request budget exceeded")
@@ -284,7 +284,7 @@ class BlenderConnectionTests(unittest.TestCase):
                 connection = BlenderConnection("127.0.0.1", 9876)
                 uploads = []
 
-                def request(message):
+                def request(message, *, scene_operation=False):
                     namespace = {}
                     exec(message["code"], namespace)
                     result = namespace["result"]
@@ -311,7 +311,7 @@ class BlenderConnectionTests(unittest.TestCase):
         connection = BlenderConnection("127.0.0.1", 9876)
         connection.backend, connection.library_ready = "execute", True
 
-        def request(message):
+        def request(message, *, scene_operation=False):
             namespace = {}
             try:
                 exec(message["code"], namespace)

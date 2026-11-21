@@ -80,9 +80,16 @@ The native addon requires API **1**. A very old addon, or an endpoint that does 
 - A timeout does not prove that Blender stopped. Inspect the scene before retrying.
 - The bridge never automatically retries a scene mutation or render after a failed or timed-out transfer.
 - Cancelling a request after it was dispatched does not guarantee that Blender's operation stops. The journal may report `in_flight` for exactly this reason.
+- After cancelling an `in_flight` batch, inspect the scene for completed steps before retrying. After cancelling an `in_flight` render, check whether Blender is still rendering and whether the output file was written.
 - Do not run a diagnostic render concurrently with the geometry changes it is intended to inspect. Socket requests are serialized, but their submission order is not a verification phase.
 
 If renders consistently exceed the client's hard limit, reduce samples or resolution, or use a client configuration that permits a longer tool timeout.
+
+## Unknown batch arguments, RNA properties, or missing node trees
+
+- **`batch_tools`:** Look up the tool named in the error with `get_tool_help` and use its exact argument names. An unknown argument fails validation before any step runs.
+- **`set_properties`:** Call `get_properties` with the same target and owner, omitting `paths` to discover the available RNA properties. `SCENE` and `RENDER` are different owners; for example, `resolution_x` belongs to `RENDER`, while `cycles.samples` is a nested path on `SCENE` when Cycles is available.
+- **`get_node_tree`:** Supply the exact datablock `name` for `MATERIAL` or `NODE_GROUP`. Use `list_materials` for material names. Without a name, `WORLD` uses the active scene's world and requires one to exist. Use `COMPOSITOR` for the active scene's compositor.
 
 ## A bridge process survives after the client closes
 

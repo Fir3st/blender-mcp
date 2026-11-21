@@ -157,6 +157,8 @@ def register_tools(mcp: FastMCP, call) -> dict[str, Any]:
 
         Supports material/world shader graphs, Geometry Nodes groups and the
         active scene compositor, including Blender 5.x compositing node groups.
+        For MATERIAL and NODE_GROUP, supply the exact datablock name. WORLD
+        defaults to the active scene's world; COMPOSITOR uses the active scene.
         Use socket indices when names are duplicated.
         """
         return call("get_node_tree", locals())
@@ -172,6 +174,7 @@ def register_tools(mcp: FastMCP, call) -> dict[str, Any]:
         be linked without recreating them. New nodes/links are validated before
         removing existing nodes; failed additions are cleaned up. clear=true
         replaces the graph. Node properties support datablock pointer values.
+        MATERIAL and NODE_GROUP require name; WORLD defaults to the scene world.
         """
         return call("edit_node_tree", {"target": target, "name": name, "clear": clear,
                     "nodes": [node.model_dump() for node in nodes],
@@ -180,7 +183,10 @@ def register_tools(mcp: FastMCP, call) -> dict[str, Any]:
     @tool
     def set_node_inputs(target: TreeTarget, node_name: str, inputs: dict[str, Any],
                         name: str | None = None) -> dict[str, Any]:
-        """Update existing node input defaults by socket name/index, with rollback on error."""
+        """Update existing node input defaults by socket name/index, with rollback on error.
+
+        MATERIAL and NODE_GROUP require name; WORLD defaults to the scene world.
+        """
         return call("set_node_inputs", locals())
 
     @tool
@@ -415,7 +421,8 @@ def property_at(root, path):
             raise ValueError(f"Unset pointer in property path: {path}")
     prop = owner.bl_rna.properties.get(parts[-1])
     if prop is None:
-        raise ValueError(f"Unknown RNA property: {path}")
+        raise ValueError(f"Unknown RNA property: {path} on {owner.bl_rna.identifier}; "
+                         "check this Blender version's RNA properties (use get_properties for supported targets)")
     return owner, parts[-1], prop
 
 def rna_set(root, properties):
@@ -512,11 +519,15 @@ def rna_target(params):
     return item
 
 def node_tree(target, name=None, create=False):
+    if target in {"MATERIAL", "NODE_GROUP"} and not name:
+        raise ValueError(f"Node tree requires name for {target}; supply the exact datablock name")
     if target == "NODE_GROUP":
-        tree = bpy.data.node_groups.get(name or "")
+        tree = bpy.data.node_groups.get(name)
     elif target in {"MATERIAL", "WORLD"}:
         table = bpy.data.materials if target == "MATERIAL" else bpy.data.worlds
-        owner = table.get(name) if name else (bpy.context.scene.world if target == "WORLD" else None)
+        owner = table.get(name) if name else bpy.context.scene.world
+        if target == "WORLD" and not name and owner is None:
+            raise ValueError("Node owner not found: the active scene has no world; supply an existing world name or assign a world")
         if owner is None: raise ValueError(f"Node owner not found: {target}/{name}")
         if create: owner.use_nodes = True
         tree = owner.node_tree

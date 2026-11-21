@@ -1,7 +1,9 @@
 import asyncio
 import json
 from pathlib import Path
+import socket
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock, patch
 
@@ -49,8 +51,10 @@ class ErrorLogTests(unittest.IsolatedAsyncioTestCase):
                 connection = server.BlenderConnection("127.0.0.1", 9876)
                 connection.library_ready = True
                 connection.backend = backend
+                response = {"status": "error", "message": "ValueError: Unknown RNA property: unavailable"}
+                peer = Mock(recv=Mock(return_value=json.dumps(response).encode() + b"\0"))
                 with patch.object(server, "_get_conn", return_value=connection), patch.object(
-                    connection, "_request", return_value={"status": "error", "message": "ValueError: Unknown RNA property: unavailable"}
+                    socket, "socket", return_value=peer
                 ):
                     with self.assertRaises(ToolError):
                         await server.mcp.call_tool("get_properties", {"target": "SCENE", "paths": ["unavailable"]})
@@ -61,13 +65,87 @@ class ErrorLogTests(unittest.IsolatedAsyncioTestCase):
     async def test_connection_timeout_remains_in_flight_and_is_not_retried(self):
         connection = server.BlenderConnection("127.0.0.1", 9876)
         connection.library_ready = True
-        with patch.object(server, "_get_conn", return_value=connection), patch.object(
-            connection, "_request", side_effect=RuntimeError("Blender connection error: timed out")
-        ) as request:
+        peer = Mock(recv=Mock(side_effect=TimeoutError("timed out")))
+        with patch.object(server, "_get_conn", return_value=connection), patch.object(socket, "socket", return_value=peer):
             with self.assertRaises(ToolError):
                 await server.mcp.call_tool("get_scene_info", {})
-        request.assert_called_once()
+        peer.sendall.assert_called_once()
+        self.assertEqual(json.loads(peer.sendall.call_args.args[0][:-1])["params"]["command"], "get_scene_info")
         self.assertEqual(self.journal.read()["events"][-1]["execution_state"], "in_flight")
+
+    async def test_connection_refused_before_or_after_library_setup_is_not_started(self):
+        for library_ready, tool in ((False, "get_blender_info"), (True, "get_scene_info")):
+            with self.subTest(library_ready=library_ready):
+                connection = server.BlenderConnection("127.0.0.1", 9876)
+                connection.library_ready = library_ready
+                peer = Mock(connect=Mock(side_effect=ConnectionRefusedError("Connection refused")))
+                with patch.object(server, "_get_conn", return_value=connection), patch.object(socket, "socket", return_value=peer):
+                    with self.assertRaisesRegex(ToolError, r"127\.0\.0\.1:9876.*start.*MCP server"):
+                        await server.mcp.call_tool(tool, {})
+                peer.sendall.assert_not_called()
+                event = self.journal.read(tool=tool)["events"][0]
+                self.assertEqual(event["execution_state"], "not_started")
+
+    async def test_missing_runtime_reply_followed_by_failed_reload_did_not_start_batch(self):
+        for backend, reply in (
+            ("native", {"status": "error", "code": "LIBRARY_NOT_LOADED"}),
+            ("execute", {"status": "ok", "result": {"_mcp_runtime_missing": True}}),
+        ):
+            with self.subTest(backend=backend):
+                connection = server.BlenderConnection("127.0.0.1", 9876)
+                connection.library_ready, connection.backend = True, backend
+                peer = Mock(recv=Mock(return_value=json.dumps(reply).encode() + b"\0"))
+                offline = Mock(connect=Mock(side_effect=ConnectionRefusedError("Connection refused")))
+                async with create_connected_server_and_client_session(server.mcp) as client:
+                    with patch.object(server, "_get_conn", return_value=connection), patch.object(
+                        socket, "socket", side_effect=[peer, offline]
+                    ):
+                        result = await client.call_tool("batch_tools", {"operations": [{"tool": "get_scene_info"}]})
+                self.assertTrue(result.isError)
+                self.assertIn("Connection refused", result.content[0].text)
+                offline.sendall.assert_not_called()
+                event = self.journal.read(tool="batch_tools")["events"][0]
+                self.assertEqual(event["execution_state"], "not_started")
+
+    async def test_cancelled_render_connecting_to_blender_is_not_sent(self):
+        connecting, release, closed = threading.Event(), threading.Event(), threading.Event()
+
+        def connect(_address):
+            connecting.set()
+            if not release.wait(2):
+                raise TimeoutError("test did not release connection")
+
+        peer = Mock(connect=Mock(side_effect=connect), close=Mock(side_effect=closed.set))
+        connection = server.BlenderConnection("127.0.0.1", 9876)
+        connection.library_ready = True
+        with patch.object(server, "_get_conn", return_value=connection), patch.object(socket, "socket", return_value=peer):
+            pending = asyncio.create_task(server.mcp.call_tool("render_still", {"path": "/render.png"}))
+            try:
+                self.assertTrue(await asyncio.to_thread(connecting.wait, 2))
+                pending.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await pending
+            finally:
+                release.set()
+            self.assertTrue(await asyncio.to_thread(closed.wait, 2))
+            peer.sendall.assert_not_called()
+        events = self.journal.read()["events"]
+        self.assertEqual([(e["phase"], e["execution_state"]) for e in events], [("cancelled", "not_started")])
+
+    async def test_batch_unknown_argument_records_the_rejected_step_without_leaking_names(self):
+        with patch.object(socket, "socket", side_effect=AssertionError("unexpected Blender socket")):
+            with self.assertRaisesRegex(ToolError, "Operation 1: unknown arguments for modify_object"):
+                await server.mcp.call_tool("batch_tools", {"operations": [
+                    {"tool": "create_object", "arguments": {"name": "Box"}},
+                    {"tool": "modify_object", "arguments": {"name": "Box", "DO_NOT_LOG_KEY": "DO_NOT_LOG_VALUE"}},
+                ]})
+        events = self.journal.read()["events"]
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual((event["tool"], event["phase"], event["execution_state"], event["batch_index"]),
+                         ("modify_object", "batch_preflight", "not_started", 1))
+        self.assertIn("get_tool_help", event["summary"])
+        self.assertNotIn("DO_NOT_LOG_", self.path.read_text())
 
     async def test_batch_step_failure_has_its_tool_index_and_no_duplicate_event(self):
         connection = Mock()

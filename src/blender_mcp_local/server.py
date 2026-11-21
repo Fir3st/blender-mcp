@@ -154,7 +154,8 @@ class BlenderMCP(FastMCP):
         self._active_calls += 1
         self._last_client_activity = time.monotonic()
         tool = self._tool_manager.get_tool(name)
-        context = {"logged": False, "cancelled": False, "execution_state": "not_started", "tool": name if tool else "unknown_tool",
+        context = {"logged": False, "cancelled": False, "dispatch_lock": threading.Lock(),
+                   "execution_state": "not_started", "tool": name if tool else "unknown_tool",
                    "argument_keys": list(tool.parameters.get("properties", {})) if tool else []}
         marker = _error_context.set(context)
         _bridge_log.info("tool_started", tool=context["tool"])
@@ -168,7 +169,8 @@ class BlenderMCP(FastMCP):
             return result
         except asyncio.CancelledError as error:
             status, failure = "cancelled", error
-            context["cancelled"] = True
+            with context["dispatch_lock"]:
+                context["cancelled"] = True
             if not context["logged"]:
                 _record_error(context["tool"], error, arguments, phase="cancelled")
             raise
@@ -297,22 +299,36 @@ class BlenderConnection:
             raise ConnectionError("Blender returned a non-object response")
         return response
 
-    def _request(self, command: dict[str, Any]) -> dict[str, Any]:
+    def _request(self, command: dict[str, Any], *, scene_operation: bool = False) -> dict[str, Any]:
         data = json.dumps(command, allow_nan=False).encode("utf-8")
         if len(data) > 64 * 1024 * 1024:
             raise ValueError("Blender request exceeds the 64 MiB message limit")
         payload = struct.pack(">I", len(data)) + data if self.protocol == "length" else data + b"\0"
+        context = _error_context.get() if scene_operation else None
         try:
             sock = self._ensure()
+            if context is not None:
+                # Cancellation and dispatch must agree on who got here first.
+                # Never hold this lock while doing socket I/O.
+                with context["dispatch_lock"]:
+                    if context["cancelled"]:
+                        raise RuntimeError("Request cancelled before Blender dispatch; no scene operation started")
+                    context["execution_state"] = "in_flight"
             sock.sendall(payload)
             response = self._recv_response()
+            if context is not None:
+                runtime_missing = (response.get("code") == "LIBRARY_NOT_LOADED"
+                                   or response.get("result") == {"_mcp_runtime_missing": True})
+                context["execution_state"] = "not_started" if runtime_missing else "response_received"
         except (OSError, ConnectionError) as e:
             _bridge_log.warning(
                 "blender_request_failed", host=self.host, port=self.port,
                 protocol=self.protocol, error_type=type(e).__name__,
                 error=_safe_error_text(e),
             )
-            self.disconnect()
+            if isinstance(e, ConnectionRefusedError):
+                raise RuntimeError(f"Connection refused by Blender at {self.host}:{self.port}; "
+                                   "start its MCP server and verify the host/port") from e
             raise RuntimeError(f"Blender connection error: {e}") from e
         finally:
             self.disconnect()
@@ -322,19 +338,14 @@ class BlenderConnection:
     @staticmethod
     def _result(response: dict[str, Any]) -> Any:
         if response.get("status") not in ("ok", "success"):
-            # A remote operation failure is a completed response, unlike a
-            # socket timeout where the scene operation may still be running.
-            context = _error_context.get()
-            if context is not None:
-                context["execution_state"] = "response_received"
             raise RuntimeError(response.get("message", "Unknown Blender error"))
         return response.get("result", {})
 
-    def execute_code(self, code: str, *, strict_json: bool = True) -> Any:
+    def execute_code(self, code: str, *, strict_json: bool = True, scene_operation: bool = False) -> Any:
         command = {"type": "execute", "params": {"code": code, "strict_json": strict_json}}
         if self.protocol == "legacy":
             command = {"type": "execute", "code": code, "strict_json": strict_json}
-        return self._result(self._request(command))
+        return self._result(self._request(command, scene_operation=scene_operation))
 
     def _load_library(self) -> None:
         if self.backend == "execute":
@@ -419,7 +430,7 @@ else:
     result = runtime['transport_result']({invocation})
 """
         if staged is None:
-            return self._read_execute_result(self.execute_code(code))
+            return self._read_execute_result(self.execute_code(code, scene_operation=True))
         # The execute-only endpoint receives little data per UI tick. Stage
         # bounded chunks, then invoke the scene operation exactly once. A single
         # pending slot bounds abandoned uploads; IDs detect competing clients.
@@ -443,7 +454,7 @@ else:
                     return result
                 if result != {"uploaded": index + 1}:
                     raise RuntimeError("Invalid Blender argument upload acknowledgement")
-            return self._read_execute_result(self.execute_code(code))
+            return self._read_execute_result(self.execute_code(code, scene_operation=True))
         finally:
             try:
                 self.execute_code(f"""
@@ -516,12 +527,13 @@ result = {{}}
                 if result == {"_mcp_runtime_missing": True}:
                     raise RuntimeError("Blender command runtime disappeared after reload")
             return result
-        response = self._request({"type": type_, "params": {**params, "library_id": library_id}})
+        command = {"type": type_, "params": {**params, "library_id": library_id}}
+        response = self._request(command, scene_operation=True)
         # This error is returned before any scene operation: safe to reload once.
         if response.get("code") == "LIBRARY_NOT_LOADED":
             self.library_ready = False
             self._load_library()
-            response = self._request({"type": type_, "params": {**params, "library_id": library_id}})
+            response = self._request(command, scene_operation=True)
         return self._result(response)
 
     def send_command(self, cmd_type: str, params: dict[str, Any] | None = None) -> Any:
@@ -701,7 +713,8 @@ def _call(cmd: str, params: dict[str, Any] | None = None) -> Any:
     try:
         return _dispatch_to_blender(lambda: _get_conn().send_command(cmd, params))
     except Exception as error:
-        if not _error_context.get() or not _error_context.get()["logged"]:
+        context = _error_context.get()
+        if context is None or not (context["logged"] or context["cancelled"]):
             _record_error(cmd, error, params, phase="blender_call")
         raise
 
@@ -711,12 +724,7 @@ def _dispatch_to_blender(callback):
     with _conn_lock:
         if context is not None and context["cancelled"]:
             raise RuntimeError("Request cancelled before Blender dispatch; no scene operation started")
-        if context is not None:
-            context["execution_state"] = "in_flight"
-        result = callback()
-        if context is not None:
-            context["execution_state"] = "response_received"
-        return result
+        return callback()
 
 
 def _stop_abandoned_bridge(reason: str) -> None:
@@ -3047,6 +3055,7 @@ async def batch_tools(operations: list[BlenderToolCall], ctx: Context | None = N
       "settings":{"width":0.1,"segments":3}}}].
 
     All tool names and argument schemas are validated before any execution.
+    If a step reports unknown arguments, check get_tool_help for that tool.
     Calls stop at the first Blender error; completed edits are not rolled back.
     Results include zero-based indices and actual returned object names. Name
     arguments can reference earlier results with {"$ref":"0.name"}; nested
@@ -3067,7 +3076,10 @@ async def batch_tools(operations: list[BlenderToolCall], ctx: Context | None = N
         tool = tools[operation.tool]
         extra = set(operation.arguments) - tool.fn_metadata.arg_model.model_fields.keys()
         if extra:
-            raise ValueError(f"Operation {index}: unknown arguments for {operation.tool}: {', '.join(sorted(extra))}")
+            error = ValueError(f"Operation {index}: unknown arguments for {operation.tool}: {', '.join(sorted(extra))}. "
+                               "Use get_tool_help for the accepted arguments.")
+            _record_error(operation.tool, error, operation.arguments, phase="batch_preflight", batch_index=index)
+            raise error
         placeholders = {}
 
         def validate_refs(value):
@@ -3118,7 +3130,8 @@ async def batch_tools(operations: list[BlenderToolCall], ctx: Context | None = N
         try:
             return _dispatch_to_blender(lambda: _get_conn().send_batch(commands))
         except Exception as error:
-            if not _error_context.get() or not _error_context.get()["logged"]:
+            context = _error_context.get()
+            if context is None or not (context["logged"] or context["cancelled"]):
                 _record_error("batch_tools", error, {"operations": commands}, phase="batch_call")
             raise
 

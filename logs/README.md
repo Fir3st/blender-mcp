@@ -58,7 +58,7 @@ tail -n 100 logs/bridge.log
 Typical lines include:
 
 ```text
-startup version="1.0.11" pid=... host="127.0.0.1" port=9876 protocol="legacy"
+startup version="1.0.12" pid=... host="127.0.0.1" port=9876 protocol="legacy"
 blender_connect host="127.0.0.1" port=9876 protocol="legacy"
 tool_started tool="get_scene_info"
 tool_finished tool="get_scene_info" status="ok" duration_ms=12.4
@@ -106,17 +106,19 @@ sharing it.
 
 ## Cancellation and execution state
 
-From 1.0.5, cancellation includes `execution_state`:
+The `execution_state` describes the tool operation, not setup traffic such as
+connecting, loading the command library or uploading arguments:
 
-- `not_started` means no Blender call had begun.
-- `in_flight` means work may continue despite the cancelled client.
-- `response_received` means the callback had returned.
+- `not_started` means dispatch had not begun or Blender confirmed that its command runtime was missing and did not run the tool.
+- `in_flight` means dispatch began but no response was received. Blender may still be working.
+- `response_received` means Blender replied to the tool request, even if it failed or further result transfer is incomplete.
 
-Queued calls are blocked after client cancellation. Batch failures preserve frame
-locations. Older generic records remain readable, but omitted details cannot be
-recovered retroactively.
+Operations cancelled while queueing or connecting are not dispatched. A timeout
+while awaiting a tool response remains `in_flight`; a connection failure before
+dispatch is `not_started`. The bridge never repeats a scene edit after an
+ambiguous transfer failure.
 
-Completed error responses also use `response_received`; a rejected RNA edit is
-not still running. Transport timeouts remain `in_flight` because execution may
-continue. Large execute-backend mesh/batch arguments are compressed and uploaded
-in 16 KiB chunks before dispatch; a failed transfer never retries the scene edit.
+Unknown batch arguments are logged as `batch_preflight` with the step's tool and
+zero-based `batch_index`; no step has run. A Blender failure during a batch is
+logged as `batch_step` and preserves remote frame locations. Older generic
+records remain readable, but omitted details cannot be recovered retroactively.

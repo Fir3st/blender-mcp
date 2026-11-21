@@ -77,7 +77,7 @@ Alternatively, build and install a generated source package:
 ```bash
 python tools/build_release.py
 ls dist
-pip install dist/blender_mcp_local-1.0.11.tar.gz   # replace with the generated version
+pip install dist/blender_mcp_local-1.0.12.tar.gz   # replace with the generated version
 ```
 
 `dist/` is generated locally and is not part of the source repository. Build it with `python tools/build_release.py`.

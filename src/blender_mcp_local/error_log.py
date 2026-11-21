@@ -20,8 +20,10 @@ FRAME_FUNCTIONS = {"dispatch", "dispatch_advanced", "dispatch_production", "sock
                    "_request", "_result", "_read_execute_result", "_execute_code", "_dispatch", "threaded", "<module>",
                    "json_value", "transport_result", "expression_valid", "_dispatch_to_blender"}
 SUMMARIES = [
+    ("unknown arguments for", "A batch step supplied unsupported arguments; use get_tool_help for the step's schema."),
     ("Connection refused", "The Blender endpoint refused the connection; start its MCP server and verify the host/port."),
     ("Node type", "The node type is unavailable or unsupported by this Blender version or node-tree type."),
+    ("Node tree requires name for", "Material and node-group targets require the exact datablock name."),
     ("Node owner not found", "The material/world owning the requested node tree was not found."),
     ("Node tree not found", "The requested node tree is absent or disabled; create or enable it first."),
     ("Node not found", "The requested node was not found; inspect the actual node names."),
@@ -221,7 +223,8 @@ class ErrorJournal:
                                 raise ValueError("Invalid error type")
                             if known_tools is not None and event.get("tool") not in known_tools:
                                 raise ValueError("Unknown logged tool")
-                            if event.get("phase") not in {"tool", "blender_call", "batch_call", "batch_step", "returned_error", "cancelled", "server"}:
+                            if event.get("phase") not in {"tool", "blender_call", "batch_call", "batch_preflight",
+                                                          "batch_step", "returned_error", "cancelled", "server"}:
                                 raise ValueError("Unknown phase")
                             version = event.get("bridge_version")
                             if version is not None and (not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version)):

@@ -26,6 +26,25 @@ class BlenderIntegrationTests(unittest.TestCase):
     def cmd(self, command, **arguments):
         return self.connection.send_command(command, arguments)
 
+    def test_node_tree_requires_names_for_materials_and_groups_and_defaults_to_scene_world(self):
+        for target in ("MATERIAL", "NODE_GROUP"):
+            with self.subTest(target=target), self.assertRaisesRegex(RuntimeError, f"requires name for {target}"):
+                self.cmd("get_node_tree", target=target)
+        self.assertEqual(self.cmd("get_node_tree", target="WORLD"),
+                         self.cmd("get_node_tree", target="WORLD", name="World"))
+        self.cmd("set_properties", target="SCENE", properties={"world": None})
+        try:
+            with self.assertRaisesRegex(RuntimeError, "the active scene has no world"):
+                self.cmd("get_node_tree", target="WORLD")
+        finally:
+            self.cmd("set_properties", target="SCENE", properties={"world": {"id_type": "WORLD", "name": "World"}})
+
+    def test_unknown_rna_property_reports_owner_and_keeps_other_properties_unchanged(self):
+        before = self.cmd("get_properties", target="RENDER", paths=["resolution_x"])
+        with self.assertRaisesRegex(RuntimeError, r"Unknown RNA property: not_a_render_property .*RenderSettings.*get_properties"):
+            self.cmd("set_properties", target="RENDER", properties={"resolution_x": 123, "not_a_render_property": True})
+        self.assertEqual(self.cmd("get_properties", target="RENDER", paths=["resolution_x"]), before)
+
     def test_geometry_uv_and_atomic_mesh_failure(self):
         name = self.cmd("create_object", name="MeshTest", type="cube")["name"]
         before = self.cmd("get_object_info", name=name)["mesh"]
